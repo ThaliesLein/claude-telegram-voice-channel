@@ -228,11 +228,70 @@ try:
     check(f"hook: mapping table ({len(table)} tool names) sends exactly {{\"kind\": ...}}", not bad, bad)
     got.clear()
     r, dt = hook(json.dumps({"hook_event_name": "Stop", "stop_hook_active": False}))
-    check("hook: Stop -> idle", r.returncode == 0 and len(got) == 1 and json.loads(got[0][2]) == {"kind": "idle"}, got)
+    check("hook: Stop -> idle", r.returncode == 0 and len(got) == 1 and json.loads(got[0][2]) == {"kind": "idle", "bg": 0}, got)
     p, h, body = got[0]
     check("hook: POST /internal/progress with the token header, JSON content type, loopback Host",
           p == "/internal/progress" and h.get("X-Internal-Token") == HTOKEN and h.get("Content-Type") == "application/json" and h.get("Host", "").startswith("127.0.0.1:"), (p, list(h)))
-    check("hook: nothing but the kind is sent (no tool input, path or command)", body == b'{"kind":"idle"}' and b"secret" not in body)
+    check("hook: nothing but the kind is sent (no tool input, path or command)", body == b'{"kind":"idle","bg":0}' and b"secret" not in body)
+
+    # ---- background helpers: agent_id, Stop with background_tasks, SubagentStart/SubagentStop ----
+    allbodies = []
+    def sent(text, **kw):
+        got.clear()
+        r, dt = hook(text, **kw)
+        allbodies.extend(g[2] for g in got)
+        return r, [g[2] for g in got]
+    def silent(r):
+        return r.returncode == 0 and r.stdout == "" and r.stderr == ""
+    SECRET = "SECRETWORD /etc/shadow"
+    inside = json.dumps({"session_id": "s", "agent_id": "a1b2", "agent_type": "Explore", "hook_event_name": "PreToolUse", "tool_name": "Read",
+                         "tool_input": {"file_path": SECRET}})
+    r, b_ = sent(inside)
+    check("hook: PreToolUse with an agent_id -> {kind, who: agent}, nothing else", silent(r) and b_ == [b'{"kind":"read","who":"agent"}'], b_)
+    r, b_ = sent(json.dumps({"agent_id": "", "hook_event_name": "PreToolUse", "tool_name": "Bash"}))
+    check("hook: an empty agent_id counts as the main session", silent(r) and b_ == [b'{"kind":"run"}'], b_)
+    r, b_ = sent(json.dumps({"hook_event_name": "PreToolUse", "tool_name": "Bash", "tool_input": {"command": "echo"}, "agent_id": "x9"}))
+    check("hook: agent_id after the tool input is found (64 KB are read)", silent(r) and b_ == [b'{"kind":"run","who":"agent"}'], b_)
+    r, b_ = sent(json.dumps({"hook_event_name": "PreToolUse", "tool_name": "Bash", "tool_input": {"command": "echo '{\"agent_id\": \"x\"}'"}}))
+    check("hook: an agent_id inside a string of the tool input is not one", silent(r) and b_ == [b'{"kind":"run"}'], b_)
+    def stop(tasks, **extra):
+        d = {"session_id": "s", "hook_event_name": "Stop", "last_assistant_message": "text", **extra}
+        if tasks is not None:
+            d["background_tasks"] = tasks
+        return json.dumps(d)
+    T = lambda ty, st, **k: {"id": "t", "type": ty, "status": st, "description": SECRET, **k}
+    cases = [("no background_tasks", None, 0), ("empty list", [], 0), ("one running subagent", [T("subagent", "running")], 1),
+             ("running workflow with a name", [T("workflow", "running", name="wf")], 1), ("running teammate", [T("teammate", "running")], 1),
+             ("three kinds running", [T("subagent", "running"), T("workflow", "running"), T("teammate", "running")], 3),
+             ("completed and failed ones are not counted", [T("subagent", "completed"), T("subagent", "failed"), T("subagent", "running")], 1),
+             ("shell, monitor, cloud and MCP entries are not counted", [T("shell", "running"), T("monitor", "running"), T("cloud session", "running"), T("MCP task", "running")], 0),
+             ("mixed", [T("shell", "running"), T("subagent", "running"), T("subagent", "stopped"), T("workflow", "running")], 2),
+             ("a hundred running: capped at 20", [T("subagent", "running") for _ in range(100)], 20),
+             ("garbage entries", [1, "x", None, {"type": "subagent"}, {"status": "running"}], 0)]
+    for label, tasks, want in cases:
+        r, b_ = sent(stop(tasks))
+        check(f"hook: Stop, {label} -> bg {want}", silent(r) and b_ == [json.dumps({"kind": "idle", "bg": want}, separators=(",", ":")).encode()], b_)
+    r, b_ = sent(stop([T("subagent", "running")], last_assistant_message="x" * 20000))
+    check("hook: Stop with a 20 KB message before background_tasks (over 4 KB) still counts", silent(r) and b_ == [b'{"kind":"idle","bg":1}'], b_)
+    text = json.dumps({"session_id": "s", "hook_event_name": "Stop", "background_tasks": [T("subagent", "running"), T("workflow", "running")], "last_assistant_message": "y" * 200000})
+    r, b_ = sent(text)
+    check("hook: Stop with a 200 KB payload -> bg 2, quick, silent", silent(r) and b_ == [b'{"kind":"idle","bg":2}'], b_)
+    r, b_ = sent(stop(None, last_assistant_message='say "background_tasks": [{"type":"subagent","status":"running"}] now'))
+    check("hook: a background_tasks look-alike inside the message text is not counted", silent(r) and b_ == [b'{"kind":"idle","bg":0}'], b_)
+    r, b_ = sent('{"hook_event_name":"Stop","background_tasks":[{"type":"subagent","status":"running"', wait=0.6)
+    check("hook: Stop with a truncated background_tasks -> plain idle (no bg), silent", silent(r) and b_ == [b'{"kind":"idle"}'], b_)
+    for ev_, kind_ in (("SubagentStart", "agent_start"), ("SubagentStop", "agent_stop")):
+        r, b_ = sent(json.dumps({"hook_event_name": ev_, "agent_id": "a1", "agent_type": "general-purpose", "last_assistant_message": SECRET,
+                                 "agent_transcript_path": "/root/" + SECRET}))
+        check(f"hook: {ev_} -> {kind_}, nothing else", silent(r) and b_ == [json.dumps({"kind": kind_}).replace(" ", "").encode()], b_)
+        for label, d in (("an empty agent_type", {"agent_type": ""}), ("no agent_type", {})):
+            r, b_ = sent(json.dumps({"hook_event_name": ev_, "agent_id": "a1", **d}), wait=0.5)
+            check(f"hook: {ev_} of an internal agent ({label}) is ignored", silent(r) and b_ == [], b_)
+    r, b_ = sent(json.dumps({"hook_event_name": "SubagentStop", "agent_id": "a1", "last_assistant_message": "z" * 5000, "agent_type": "Plan"}))
+    check("hook: SubagentStop with agent_type after 4 KB of text is still seen", silent(r) and b_ == [b'{"kind":"agent_stop"}'], b_)
+    allsent = b"".join(allbodies)
+    check("hook: no secret word reached the request in any of these", len(allbodies) > 20 and b"SECRETWORD" not in allsent and b"shadow" not in allsent)
+    got.clear()
     got.clear()
     for label, text in (("SubagentStop", json.dumps({"hook_event_name": "SubagentStop"})), ("PostToolUse", json.dumps({"hook_event_name": "PostToolUse", "tool_name": "Read"})),
                         ("garbage", "\x00\xff not json {{{"), ("empty", ""), ("a list", "[1,2]"), ("tool name with a space", json.dumps({"hook_event_name": "PreToolUse", "tool_name": "a b"}))):

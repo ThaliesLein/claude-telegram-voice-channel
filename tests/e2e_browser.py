@@ -994,6 +994,122 @@ async def t_audio_url(inst, fx):
         check("audio_url: each rejected URL is logged with console.warn", len(warns) == len(bad), f"{len(warns)} of {len(bad)}")
 
 
+async def t_audio_parts(inst, fx):
+    """Reply audio that arrives in parts (`audio` events tied to the reply event by its id). Runs without speech keys: the first
+    half uses made-up events with silent clips (CRAFT), the second a throwaway instance with VOICE_TEST_TTS_TONE=1, whose own
+    parts reach the page through the real event long-poll.
+    Loading from the reply event until the audio element fires "playing" (not Speaking), the parts play in order, no Listening or
+    Hearing between them, the detector stays paused over the gaps (nothing is uploaded), Interrupt (the button, a tap on the orb)
+    drops the parts that arrive later, an end event (last, no audio) and the 45 s wait for a part that never comes return to
+    Listening, and the same strings are shown in Russian."""
+    srv = fake_instance(VOICE_TEST_TTS_TONE=1)
+    try:
+        quiet = silent_wav(os.path.join(tmp, "parts-quiet.wav"), 5)
+        clips = [reply_clip(srv, 3), reply_clip(srv, 1.5), reply_clip(srv, 1.5), reply_clip(srv, 12)]
+        ORB = "document.getElementById('orb').dataset.state"
+        OWN = "__srcs.filter(function(s){return s.indexOf('/a/')>=0}).map(function(s){return s.slice(s.indexOf('/a/'))})"
+        ended = REPLY_AUDIO + ".filter(function(m){return m.type==='ended'}).length"
+        playing = REPLY_AUDIO + ".filter(function(m){return m.type==='playing'}).length"
+        BTN = "!document.getElementById('interrupt').hidden"
+        def rep(i): return {"id": i * 10, "type": "reply", "text": f"Reply {i}", "audio_url": None, "audio_parts": True}
+        def part(i, n, url, last): return {"id": i * 10 + 1 + n, "type": "audio", "reply_id": i * 10, "index": n, "last": last, "audio_url": url}
+        async def inject(pg, evs):
+            check("audio parts: setup: the page is waiting for events", bool(await pg.wait("__held.length>=1", 15)))
+            await pg.ev("__inject(%s)" % json.dumps(evs))
+        async with Session(srv, quiet, lang="en", loop=True, script=CRAFT) as pg:
+            await pg.click("#livebtn")
+            check("audio parts: Live starts", bool(await pg.wait(LISTENING, 40)))
+            # 1: the reply event alone: Loading, not Speaking; the interrupt button is there; nothing is played
+            await inject(pg, [rep(1)])
+            check("audio parts: the reply event with no audio yet: Loading", bool(await pg.wait(ORB + "==='loading'", 5)) and await pg.ev(STATE_TEXT) == "Loading\u2026", await pg.ev(STATE_TEXT))
+            await asyncio.sleep(1.5)
+            check("audio parts: ...and it stays Loading while the first part is not there (no Listening, no Speaking)",
+                  await pg.ev(ORB) == "loading" and await pg.ev(BTN) is True and await pg.ev(OWN) == [])
+            # 2: part 0 (3 s): Loading until the element fires playing, then Speaking
+            await inject(pg, [part(1, 0, clips[0], False)])
+            check("audio parts: the first part plays", bool(await pg.wait(playing + ">=1", 10)))
+            check("audio parts: Speaking once it plays", bool(await pg.wait(ORB + "==='speaking'", 3)))
+            # 3: the clip ends and the next part is not there: Loading again, the detector stays paused
+            check("audio parts: the first part ends", bool(await pg.wait(ended + ">=1", 8)))
+            await asyncio.sleep(1.2)
+            check("audio parts: the gap before the next part is Loading, not Listening", await pg.ev(ORB) == "loading" and await pg.ev(STATE_TEXT) == "Loading\u2026" and await pg.ev(BTN) is True)
+            # 4: parts 1 and 2 (the last): in order, then Listening
+            await inject(pg, [part(1, 1, clips[1], False)])
+            await pg.wait(playing + ">=2", 8)
+            await inject(pg, [part(1, 2, clips[2], True)])
+            check("audio parts: the parts play in order", bool(await pg.wait(ended + ">=3", 12)) and await pg.ev(OWN) == clips[:3], await pg.ev(OWN))
+            check("audio parts: after the last part Listening comes back", bool(await pg.wait(LISTENING, 5)))
+            T = parse(await pg.T())
+            texts = [x["text"] for x in T["states"]]
+            i0 = next((i for i, x in enumerate(texts) if x == "Loading\u2026"), None)
+            run = texts[i0:] if i0 is not None else []
+            check("audio parts: Loading, Speaking, Loading, Speaking, then Listening: no Listening or Hearing in between",
+                  i0 is not None and not any(t.startswith(("Listening", "Hearing", "Sending")) for t in run[:-1]) and run[-1].startswith("Listening")
+                  and any(t.startswith("Speaking") for t in run), str(run))
+            check("audio parts: the half-duplex hold covered the gap: nothing was uploaded", len(ups_of(T)) == 0)
+            # 5: interrupt with a button while a part plays; a part that arrives later is dropped
+            n_src = len(await pg.ev(OWN))
+            await inject(pg, [rep(2), part(2, 0, clips[3], False)])
+            check("audio parts: interrupt: a long part is playing", bool(await pg.wait(ORB + "==='speaking'", 8)))
+            await pg.click("#interrupt")
+            check("audio parts: Interrupt stops the part and Listening comes back", bool(await pg.wait(LISTENING, 5)))
+            await inject(pg, [part(2, 1, clips[1], True)])
+            await asyncio.sleep(1.5)
+            check("audio parts: ...and the part of that reply that arrives later is not played",
+                  len(await pg.ev(OWN)) == n_src + 1 and await pg.ev(LISTENING) is True and await pg.ev(BTN) is False, await pg.ev(OWN))
+            # 5b: preload: while a part plays, the next queued part is fetched by a second element; an interrupt drops it
+            PRE = "document.getElementById('preload').getAttribute('src')"
+            await inject(pg, [rep(4), part(4, 0, clips[3], False)])
+            check("audio parts: preload: a long part is playing", bool(await pg.wait(ORB + "==='speaking'", 8)))
+            check("audio parts: preload: nothing queued, nothing preloaded", await pg.ev(PRE) in (None, ""), await pg.ev(PRE))
+            await inject(pg, [part(4, 1, clips[1], False)])
+            check("audio parts: preload: the next part is preloaded while the current one plays",
+                  bool(await pg.wait("(" + PRE + ")&&(" + PRE + ").indexOf(%s)>=0" % json.dumps(clips[1]), 5)), await pg.ev(PRE))
+            check("audio parts: preload: it is not given to the playing element (the audio element's sources are untouched)",
+                  (await pg.ev(OWN))[-1] == clips[3], await pg.ev(OWN))
+            await pg.click("#interrupt")
+            check("audio parts: preload: Interrupt drops the preloaded part", bool(await pg.wait(LISTENING, 5)) and await pg.ev(PRE) in (None, ""), await pg.ev(PRE))
+            n_src = len(await pg.ev(OWN)) - 1      # (the checks below count n_src + 1 clips)
+            # 6: a tap on the orb while a reply waits for its first part drops the reply too
+            await inject(pg, [rep(3)])
+            await pg.wait(ORB + "==='loading'", 5)
+            await pg.click("#orb")
+            check("audio parts: a tap on the orb while Loading: Listening comes back", bool(await pg.wait(LISTENING, 5)))
+            await inject(pg, [part(3, 0, clips[2], True)])
+            await asyncio.sleep(1.2)
+            check("audio parts: ...and its first part, arriving later, is not played", len(await pg.ev(OWN)) == n_src + 1 and await pg.ev(LISTENING) is True)
+            # 7: an end event (last, no audio) closes a reply whose parts will not come
+            await inject(pg, [rep(4)])
+            await pg.wait(ORB + "==='loading'", 5)
+            await inject(pg, [{"id": 41, "type": "audio", "reply_id": 40, "index": 0, "last": True, "audio_url": None}])
+            check("audio parts: an end event with no audio: Listening comes back at once", bool(await pg.wait(LISTENING, 3)))
+            # 8: a part that never comes: given up after 45 s, Live is not left deaf
+            await inject(pg, [rep(5)])
+            await pg.wait(ORB + "==='loading'", 5)
+            t0 = time.time()
+            await asyncio.sleep(40)
+            check("audio parts: still waiting after 40 s", await pg.ev(ORB) == "loading")
+            ok = await pg.wait(LISTENING, 12)
+            check("audio parts: after 45 s without a part the reply is given up and Listening comes back", bool(ok) and 43 < time.time() - t0 < 52, f"{time.time() - t0:.1f}")
+            check("audio parts: no console error", not [c for c in parse(await pg.T())["console"] if c["k"] == "error"])
+        # the real flow: the server's own part events (tone hook), Russian strings
+        async with Session(srv, quiet, lang="ru", loop=True) as pg:
+            await pg.click("#livebtn")
+            check("audio parts: real: Live starts", bool(await pg.wait(LISTENING, 40)))
+            text = "First sentence of the reply is here. " + "A second sentence follows with more words in it. " * 5
+            res = await asyncio.get_running_loop().run_in_executor(None, srv.reply, text)
+            check("audio parts: real: /internal/reply answers 200", res == 200)
+            check("audio parts: real: two parts played", bool(await pg.wait(ended + ">=2", 20)))
+            check("audio parts: real: Listening after the last part", bool(await pg.wait(LISTENING, 5)))
+            T = parse(await pg.T())
+            texts = [x["text"] for x in T["states"]]
+            check("audio parts: real: the Russian strings: Загружаю\u2026, then Говорю", "\u0417\u0430\u0433\u0440\u0443\u0436\u0430\u044e\u2026" in texts
+                  and any(t.startswith("\u0413\u043e\u0432\u043e\u0440\u044e") for t in texts), str(texts))
+            check("audio parts: real: the page played two different files, one per part", len({m["src"] for m in audio_of(T)}) == 2, str({m["src"] for m in audio_of(T)}))
+    finally:
+        srv.stop()
+
+
 async def t_csp_report(inst, fx):
     """The page reports what the policy blocks: the directive and the origin of the blocked resource only, each pair once, at most
     10 per page load, errors ignored. The violations are staged with SecurityPolicyViolationEvent, so this runs with or without a
@@ -1618,11 +1734,115 @@ def internal_progress(srv, kind):
                {"X-Internal-Token": ITOK, "Content-Type": "application/json"}, timeout=10)[0]
 
 
+def post_progress(srv, body):
+    return req(srv.base, "/internal/progress", "POST", json.dumps(body).encode(),
+               {"X-Internal-Token": ITOK, "Content-Type": "application/json"}, timeout=10)[0]
+
+
 def make_ack(srv):
     """An utterance that the channel server then fetches: the page gets an `ack` event (it is waiting for the reply)."""
     st, b = api(srv, "/api/utterance", "POST", b"\x01\x00" * 16000)
     uid = json.loads(b)["id"]
     req(srv.base, "/internal/inbox?after=%d" % (uid - 1), headers={"X-Internal-Token": ITOK}, timeout=10)
+
+
+async def t_progress_bg(inst, fx):
+    """Background helpers: while the main session is idle and the helper count (bg) is above 0 the progress line says so, a helper's own
+    tool call shows "Helper: <action>", the count clears at 0, the same in Russian. No speech keys (a FAKE instance)."""
+    srv = fake_instance()
+    async def line(pg, text, on=True, secs=8):
+        ok = await pg.wait("document.getElementById('prog').textContent===%s&&document.getElementById('prog').classList.contains('on')===%s" % (json.dumps(text), json.dumps(on)), secs)
+        return bool(ok)
+    try:
+        for lang, one, many, helper in (("en", "A helper is working in the background", "Helpers in the background: 3", "Helper: Reading files"),
+                                        ("ru", "В фоне работает помощник", "Помощников в фоне: 3", "Помощник: Читаю файлы")):
+            async with Session(srv, fx["live"], lang=lang, loop=False) as pg:
+                await pg.click("#mode-ptt")
+                await asyncio.sleep(0.8)
+                check(f"progress bg {lang}: nothing before any helper", parse(await pg.ev(PROG_LINE)) == ["", False])
+                post_progress(srv, {"kind": "agent_start"})
+                check(f"progress bg {lang}: a helper started, the main session is idle: the line shows it", await line(pg, one))
+                post_progress(srv, {"kind": "agent_start"}); post_progress(srv, {"kind": "agent_start"})
+                check(f"progress bg {lang}: three helpers: the count is shown", await line(pg, many))
+                post_progress(srv, {"kind": "read", "who": "agent"})
+                check(f"progress bg {lang}: a helper's tool call shows the action", await line(pg, helper))
+                post_progress(srv, {"kind": "idle", "bg": 1})
+                check(f"progress bg {lang}: Stop with one running helper: back to the helper line", await line(pg, one))
+                post_progress(srv, {"kind": "idle", "bg": 0})
+                check(f"progress bg {lang}: bg 0 clears the line", await line(pg, "", False))
+                check(f"progress bg {lang}: no CSP violation", not parse(await pg.ev("JSON.stringify(__T.csp)")))
+    finally:
+        srv.stop()
+
+
+CUES_STUB = r"""(function(){
+  var of = window.fetch;
+  window.__ans = [];       // the answers of /api/utterance for the next uploads, made up by the test
+  window.fetch = function(u, o){
+    var s = String((u && u.url) || u);
+    if (s.indexOf('api/utterance') >= 0 && window.__ans.length)
+      return Promise.resolve(new Response(JSON.stringify(window.__ans.shift()), {status: 200, headers: {'Content-Type': 'application/json'}}));
+    return of.apply(this, arguments);
+  };
+})();"""
+CUES_ROWS = ("JSON.stringify(Array.prototype.map.call(document.querySelectorAll('.msg.me'),function(m){var c=m.querySelector('.cues');"
+             "return [m.firstChild.nodeValue,c?c.textContent:null,m.querySelectorAll('*').length]}))")
+
+
+async def t_cues(inst, fx):
+    """How it was said: the cues in the answer of /api/utterance (names of a fixed list, from the recognizer) are shown as a small muted
+    line under the user's words, in the language of the page and as text: only names the page knows, at most three, nothing for none.
+    The answers are made up in the browser (nothing here depends on what is recognized). No speech keys."""
+    srv = fake_instance()
+    MID = " \u00b7 "
+    labels = {"en": {"uncertain": "uncertain", "joking": "joking", "irritated": "irritated", "whisper": "whisper", "other_voice": "another voice",
+                     "several_voices": "several voices", "background_media": "background media", "cut_off": "cut off"},
+              "ru": {"uncertain": "\u043d\u0435\u0443\u0432\u0435\u0440\u0435\u043d\u043d\u043e", "joking": "\u0432 \u0448\u0443\u0442\u043a\u0443",
+                     "irritated": "\u0440\u0430\u0437\u0434\u0440\u0430\u0436\u0451\u043d\u043d\u043e", "whisper": "\u0448\u0451\u043f\u043e\u0442\u043e\u043c",
+                     "other_voice": "\u0434\u0440\u0443\u0433\u043e\u0439 \u0433\u043e\u043b\u043e\u0441",
+                     "several_voices": "\u043d\u0435\u0441\u043a\u043e\u043b\u044c\u043a\u043e \u0433\u043e\u043b\u043e\u0441\u043e\u0432",
+                     "background_media": "\u0444\u043e\u043d\u043e\u0432\u043e\u0435 \u0430\u0443\u0434\u0438\u043e", "cut_off": "\u043e\u0431\u0440\u044b\u0432 \u0440\u0435\u0447\u0438"}}
+    names = list(labels["en"])
+    try:
+        for lang in ("en", "ru"):
+            L = labels[lang]
+            # (answer, the line under the words that the page must show, or None)
+            cases = [({"id": 1, "text": "hello there", "cues": ["uncertain", "joking"]}, L["uncertain"] + MID + L["joking"]),
+                     ({"id": 2, "text": "no cues", "cues": []}, None),
+                     ({"id": 3, "text": "hostile", "cues": ["<img src=x onerror=alert(1)>", "joking"]}, L["joking"]),
+                     ({"id": 4, "text": "unknown only", "cues": ["evil", "constructor", "__proto__", "toString", "hasOwnProperty"]}, None),
+                     ({"id": 5, "text": "many", "cues": ["uncertain", "joking", "irritated", "whisper", "cut_off"]}, MID.join(L[n] for n in names[:3])),
+                     ({"id": 6, "text": "a string", "cues": "joking"}, None), ({"id": 7, "text": "no field"}, None),
+                     ({"id": 8, "text": "null", "cues": None}, None), ({"id": 9, "text": "nested", "cues": [["joking"], {"a": 1}, 5]}, None)]
+            for k, group in enumerate((names[:3], names[3:6], names[6:])):                       # every name once, three at a time
+                cases.append(({"id": 20 + k, "text": "names " + str(k), "cues": group}, MID.join(L[n] for n in group)))
+            async with Session(srv, fx["ptt"], lang=lang, loop=False, script=CUES_STUB) as pg:
+                await pg.click("#mode-ptt")
+                await asyncio.sleep(0.6)
+                await pg.ev("window.__ans.push.apply(window.__ans, %s)" % json.dumps([c for c, _ in cases]))
+                errors = []
+                for k, _ in enumerate(cases, 1):          # one real push-to-talk recording per answer; the page uploads it and gets the made-up answer
+                    await pg.click("#rec")
+                    await pg.wait("document.getElementById('rec').classList.contains('on')", 10)
+                    await asyncio.sleep(0.9)
+                    await pg.click("#rec")
+                    check(f"cues {lang}: answer {k} is shown as a line of the user's",
+                          bool(await pg.wait("document.querySelectorAll('.msg.me').length>=%d" % k, 15)))
+                    await pg.wait("!document.getElementById('rec').disabled", 10)             # the upload is over, its status line is there
+                    errors.append(await pg.ev("document.querySelectorAll('.st.err').length"))
+                rows = parse(await pg.ev(CUES_ROWS))
+                check(f"cues {lang}: every answer became one line of the user's, with its words", [r[0] for r in rows] == [c["text"] for c, _ in cases], str(rows)[:300])
+                bad = [(c["text"], r[1], want) for (c, want), r in zip(cases, rows) if r[1] != want]
+                check(f"cues {lang}: the cues line is the page's own strings for the known names (at most three, none for none or for anything else)", not bad, str(bad))
+                check(f"cues {lang}: it is text under the words and nothing else (no element made of an answer)", all(r[2] == (1 if r[1] else 0) for r in rows), str(rows)[:300])
+                check(f"cues {lang}: no answer broke the page (an error line after any of them would show it)", sum(errors) == 0, str(errors))
+                st = await pg.ev("(function(){var c=document.querySelector('.msg.me .cues');if(!c)return null;var s=getComputedStyle(c);"
+                                 "return [s.fontSize,parseFloat(s.opacity),s.display]})()")
+                check(f"cues {lang}: it is small and muted", st is not None and float(st[0][:-2]) <= 12 and st[1] < 1 and st[2] == "block", str(st))
+                check(f"cues {lang}: no CSP violation", not parse(await pg.ev("JSON.stringify(__T.csp)")))
+    finally:
+        srv.stop()
+
 
 
 async def t_progress(inst, fx):
@@ -1688,9 +1908,12 @@ async def t_progress(inst, fx):
 
 TESTS = [("language", t_language), ("live", t_live), ("presets", t_presets), ("halfduplex", t_half_duplex), ("ptt", t_ptt),
          ("fallback", t_fallback), ("lifecycle", t_lifecycle), ("cap", t_cap),
-         ("ptt_double", t_ptt_double), ("audio_url", t_audio_url), ("csp_report", t_csp_report), ("csp", t_csp),
+         ("ptt_double", t_ptt_double), ("audio_url", t_audio_url), ("audio_parts", t_audio_parts), ("csp_report", t_csp_report), ("csp", t_csp),
          ("hidden_flush", t_hidden_flush), ("presence", t_presence), ("hidden_stop", t_hidden_stop), ("config_defaults", t_config_defaults),
-         ("killswitch", t_killswitch), ("rate_limit", t_rate_limit), ("presence_reply", t_presence_reply), ("confirm", t_confirm), ("progress", t_progress)]
+         ("killswitch", t_killswitch), ("rate_limit", t_rate_limit), ("presence_reply", t_presence_reply), ("confirm", t_confirm), ("progress", t_progress), ("progress_bg", t_progress_bg), ("cues", t_cues)]
+
+
+NO_KEY_TESTS = {"audio_parts", "audio_url", "presence_reply", "progress_bg", "cues"}   # these need no speech keys (made-up events, FAKE instances of their own)
 
 
 async def run_all():
@@ -1699,7 +1922,26 @@ async def run_all():
         startup = " ".join(inst.log)
         info("test instance: " + next((l for l in inst.log if "voice-web starting" in l), "?"))
         if "stt=openrouter (FAKE)" in startup or "tts=openrouter (FAKE)" in startup:
-            print("SKIP: no OpenRouter key in " + ENV_FILE + ": recognition and speech would be fakes; the browser suite needs real ones")
+            # Without keys only the tests that make up their own events (and use instances of their own) can run.
+            if not ONLY or not set(ONLY) <= NO_KEY_TESTS:
+                print("SKIP: no OpenRouter key in " + ENV_FILE + ": recognition and speech would be fakes; the browser suite needs real ones "
+                      "(VOICE_TEST_ONLY=%s runs without)" % ",".join(sorted(NO_KEY_TESTS)))
+                return
+            if not VENDOR:
+                check("vendor files found (run deploy.sh first)", False)
+                return
+            fx = {"live": silent_wav(os.path.join(tmp, "live.wav"), 5), "ptt": silent_wav(os.path.join(tmp, "ptt.wav"), 5)}
+            for name, fn in TESTS:
+                if name in ONLY:
+                    print(f"--- {name}", flush=True)
+                    del viol_log[:]
+                    try:
+                        await fn(inst, fx)
+                    except Exception as e:
+                        import traceback
+                        traceback.print_exc()
+                        check(f"{name}: ran without an exception", False, repr(e))
+                    check(f"{name}: the page reported no Content-Security-Policy violation", not viol_log, str(viol_log[:3]))
             return
         check("test instance does not mirror to Telegram", "mirror_tg=False" in startup, startup)
         if not VENDOR:

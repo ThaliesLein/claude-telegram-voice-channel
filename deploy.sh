@@ -202,7 +202,8 @@ elif python3 -I -c '
 import json, os, sys
 hook, dest = sys.argv[1], sys.argv[2]
 cmd = {"type": "command", "command": hook, "timeout": 2}
-doc = {"hooks": {"PreToolUse": [{"matcher": "*", "hooks": [cmd]}], "Stop": [{"hooks": [dict(cmd)]}]}}
+doc = {"hooks": {"PreToolUse": [{"matcher": "*", "hooks": [cmd]}], "Stop": [{"hooks": [dict(cmd)]}],
+                  "SubagentStart": [{"hooks": [dict(cmd)]}], "SubagentStop": [{"hooks": [dict(cmd)]}]}}
 tmp = dest + ".new"
 fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
 with os.fdopen(fd, "w") as f:

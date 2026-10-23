@@ -670,10 +670,11 @@ else:
     except Exception:
         sj = {}
     hk = "%s/session/progress_hook.sh" % b.OPT
-    check("deploy.sh upgrade: session-settings.json is valid JSON, mode 600, with the progress hook of the code directory on PreToolUse (all tools) and Stop",
+    check("deploy.sh upgrade: session-settings.json is valid JSON, mode 600, with the progress hook of the code directory on PreToolUse (all tools), Stop, SubagentStart and SubagentStop",
           os.path.isfile(ss) and mode(ss) == 0o600 and not os.path.exists(ss + ".new")
           and sj.get("hooks", {}).get("PreToolUse") == [{"matcher": "*", "hooks": [{"type": "command", "command": hk, "timeout": 2}]}]
-          and sj.get("hooks", {}).get("Stop") == [{"hooks": [{"type": "command", "command": hk, "timeout": 2}]}] and set(sj) == {"hooks"}
+          and all(sj.get("hooks", {}).get(e) == [{"hooks": [{"type": "command", "command": hk, "timeout": 2}]}] for e in ("Stop", "SubagentStart", "SubagentStop"))
+          and set(sj["hooks"]) == {"PreToolUse", "Stop", "SubagentStart", "SubagentStop"} and set(sj) == {"hooks"}
           and os.access(hk, os.X_OK), (sj, out + err))
     stop_call = next(x for x in c if x[0] == "stop voice-web.service")
     reload_call = next(x for x in c if x[0] == "daemon-reload")

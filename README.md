@@ -15,7 +15,8 @@ A voice add-on for the official Telegram plugin for Claude Code.</p>
   <a href="#what-you-can-do-with-it">What you can do</a> ·
   <a href="#quick-start">Quick start</a> ·
   <a href="#safe-by-design">Safety</a> ·
-  <a href="#install">Install</a>
+  <a href="#install">Install</a> ·
+  <a href="CHANGELOG.md">What's new</a>
 </p>
 
 <p align="center"><img src="docs/hero.jpg" alt="Voice Mini App for Claude Code in Telegram" width="100%"></p>
@@ -29,15 +30,16 @@ Your words go into the same Claude Code session, with all its memory, files and 
 ## What you can do with it
 
 - **Work with Claude Code hands-free.** Ask questions, give tasks and hear the results while you walk, cook or are away from the keyboard.
-- **Have a natural back-and-forth.** Just talk: the app notices when you pause, sends your phrase, reads the answer aloud and listens again. Tap to interrupt at any moment.
+- **Have a natural back-and-forth.** Just talk: the app notices when you pause, sends your phrase, reads the answer aloud and listens again. The first sentence of an answer plays within a few seconds, while the rest is still being prepared.
+- **Stop Claude mid-task.** Changed your mind or misspoke? Press **Interrupt work**, or start your next phrase with "stop", and Claude drops what it was doing and listens to what you say next.
 - **Approve risky actions with one tap.** When Claude wants to push, deploy or restart something, you get a card with the exact action and **Confirm** / **Decline**. Saying "yes" out loud never counts.
-- **See what Claude is doing** while it works: reading files, running a command, searching.
+- **See what Claude is doing** while it works: reading files, running a command, searching, and whether helper agents are still busy in the background after Claude itself has gone quiet.
 - **Send ordinary Telegram voice notes.** Claude transcribes them and treats them as your message.
 - **Not lose a word when the session restarts.** What you said in the meantime is delivered when it comes back.
 - **Get warned in Telegram** when the session needs a new login, hits its usage limit or is nearly out of context.
 - **Keep secrets out of speech and chat.** Keys and tokens are replaced with "[redacted]" before a reply is spoken, shown or copied.
 
-<p align="center"><img src="docs/gallery.jpg" alt="Live conversation, progress, spoken replies, tap to confirm, push-to-talk" width="100%"></p>
+<p align="center"><img src="docs/gallery.jpg" alt="Live conversation, progress, spoken replies, tap to confirm, interrupt, push-to-talk" width="100%"></p>
 
 ## What it sounds like
 
@@ -77,9 +79,12 @@ The step-by-step version is in [Install](#install).
 
 - **Live conversation.** Tap once and just talk. A voice activity detector running in the page decides when you have finished, sends the phrase, plays the answer and listens again. You can tap the orb to interrupt a spoken answer.
 - **Push-to-talk.** Prefer a button? Switch the mode: press to record, press to send. One recording can be up to three minutes.
+- **Interrupt work.** While Claude is working or speaking, an **Interrupt work** button is shown. It stops the speech and presses Escape in Claude's terminal, which ends the current turn. Starting a phrase with "stop" (or the Russian "стоп" / "остановись") does the same, and the rest of the phrase reaches Claude as your next message: "Stop, I meant the other server." Escape is sent only while Claude is actually busy and never twice within three seconds.
+- **Answers that start quickly.** A reply is spoken in parts: the first sentence is synthesized first and plays within a few seconds, and each next part is downloaded while the previous one plays. Until the sound starts the app shows **Loading…**, not **Speaking**.
 - **Tap to confirm risky actions.** When Claude needs your approval, it shows one action as a card with **Confirm** and **Decline**. A tap counts as a typed confirmation for that action only. Saying "yes" never does.
-- **Live progress.** While Claude works, a small line says what kind of thing it is doing ("Reading files", "Running a command", "Searching"). Only the kind is shown, never file names or commands.
+- **Live progress.** While Claude works, a small line says what kind of thing it is doing ("Reading files", "Running a command", "Searching"). Only the kind is shown, never file names or commands. When Claude hands work to helper agents that keep running in the background, the line says so ("A helper is working in the background", "Helper: running a command") until they finish.
 - **Telegram voice notes.** Send a voice note to the bot and Claude can read it: it is transcribed with the same speech service.
+- **How it was said (experimental).** The speech recognizer can add a short hint about the delivery from a fixed list (unsure, joking, irritated, whispering, another voice, several voices, background media, cut off). Claude gets it as a hint that may be wrong, the app shows it in small print under your words, and a hint that the words may not be yours sends Claude to its rule for media and other speakers. Voice notes carry the same hints after their transcript. In our tests the default recognition model never added such hints; `google/gemini-3.5-flash` did (see `VOICE_STT_MODEL` under [Configuration](#configuration)).
 - **Secret redaction.** Anything that looks like a key, token or private key is replaced with "[redacted]" before a reply is spoken, shown or copied to Telegram.
 - **Replay after a restart.** Phrases you said while the session was restarting are handed to it when it comes back (for three minutes by default), marked as missed.
 - **Session watchdog (optional).** A small timer messages you in Telegram when the session needs `/login`, hit its usage limit, has a billing problem, is gone, or is nearly out of context.
@@ -123,7 +128,7 @@ You are letting a microphone give instructions to a machine, so the design assum
 - Python 3.12 (standard library only), `curl` and `rsync`.
 - [Bun](https://bun.sh), which runs the channel server.
 - [cloudflared](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/downloads/) for the tunnel.
-- `tmux`, if you want to use the session restart helper.
+- `tmux`, if you want to use the session restart helper, and for **Interrupt work**: the interrupt is an Escape key sent to the tmux pane the session runs in.
 - Claude Code with channels support and the official Telegram plugin (`telegram@claude-plugins-official`) installed, paired and working. This module is an add-on to it and does nothing on its own. This project reuses that plugin's bot: it reads the bot token from the plugin's `.env` file and adds a menu button to the same bot.
 - A Telegram bot (the one of that plugin) and your numeric Telegram user id (message `@userinfobot` to find it).
 - An [OpenRouter](https://openrouter.ai) API key.
@@ -180,6 +185,7 @@ All settings live in `/root/.voice/env`. [`env.example`](env.example) lists ever
 | `OPENROUTER_API_KEY` | Key for speech recognition and speech synthesis through OpenRouter. |
 | `VOICE_LANG` | Language you speak and hear, as a BCP-47 code such as `en-US`. Used for recognition and speech. |
 | `VOICE_TTS_OR_VOICE` | Voice for OpenRouter speech (alloy, ash, ballad, coral, echo, fable, nova, onyx, sage, shimmer, verse, marin or cedar). |
+| `VOICE_STT_MODEL`, `VOICE_TTS_MODEL` | Models for recognition and speech (defaults `google/gemini-3.5-flash-lite` and `openai/gpt-audio-mini`). With `VOICE_STT_MODEL=google/gemini-3.5-flash` the recognizer also adds the "how it was said" hints, at the price of about 2 to 4 s instead of about 1.5 s per phrase and roughly 15 to 25 times the recognition cost (measured on short Russian phrases). |
 | `VOICE_USER_NAME`, `VOICE_ASSISTANT_GENDER` | Optional. How Claude's instructions refer to you, and whether its replies are spoken in a female or male voice (matters for languages with grammatical gender). |
 | `VOICE_MENU_TEXT` | Label of the bot's menu button. |
 | `VOICE_MIRROR_TG` | Set to `0` to stop copying the conversation to your Telegram chat. |
@@ -193,9 +199,9 @@ All settings live in `/root/.voice/env`. [`env.example`](env.example) lists ever
 ## Using it
 
 - Press **Voice** in the bot's chat and pick **Live** (default) or **Push-to-talk** at the top. The page remembers your choice.
-- **Live:** tap **Start conversation** and talk. The orb shows what is happening: listening, hearing you, sending, thinking, speaking. **Pause before sending** sets how long a silence ends your phrase: 0.8 s, 1.5 s (default) or 2.5 s.
+- **Live:** tap **Start conversation** and talk. The orb shows what is happening: listening, hearing you, sending, thinking, loading (while the first words of a reply are on their way), speaking. **Pause before sending** sets how long a silence ends your phrase: 0.8 s, 1.5 s (default) or 2.5 s.
 - **Push-to-talk:** press the big button, speak, press again.
-- **Stop audio** cuts off the speech. **Speak replies** off gives you text only.
+- **Interrupt work** (shown while Claude is working or a reply plays) stops the speech and presses Escape in Claude's terminal; saying "stop" (Russian "стоп" or "остановись") at the very start of a phrase does the same, and whatever follows is sent as usual. Tapping the orb cuts off the speech. **End conversation** closes Live. The small **Speak replies** switch in the corner off gives you text only.
 - The page speaks Russian if your Telegram app is set to Russian and English otherwise.
 
 Live mode needs the screen to stay on: it asks the phone not to lock, pauses when you switch away, stops after a minute out of sight and after 15 minutes without a tap, so a forgotten phone cannot keep the microphone open. While an answer is spoken the microphone is ignored (so the phone does not hear itself); you interrupt by tapping.
@@ -215,7 +221,7 @@ python3 tests/test_deploy.py         # deploy scripts, unit hardening, migration
 E2E_SKIP_PROD=1 python3 tests/e2e_fake.py   # end to end against throwaway instances
 ```
 
-`tests/e2e_browser.py` drives headless Chrome against the page and uses real speech recognition and synthesis (a few cents). `tests/screenshots.py OUT_DIR` produces the raw screenshots in `docs/screenshots` (`SHOT_LANG=ru` for the Russian UI); the framed images at the top of this page are rendered from them by `docs/frames/hero.html` and `docs/frames/gallery.html` (open in Chrome headless at 1600 px wide and take a screenshot). After a deploy, `python3 tests/check_deployed.py` checks the installed units. Developer notes with the full specification are in [`CLAUDE.md`](CLAUDE.md).
+`tests/e2e_browser.py` drives headless Chrome against the page and uses real speech recognition and synthesis (a few cents). `tests/screenshots.py OUT_DIR` takes screenshots of the key states (`SHOT_LANG=ru` for the Russian UI), and with `SHOT_DOCS=docs/screenshots` it also writes the smaller copies used in this README; the framed images at the top of this page are rendered from them by `docs/frames/hero.html` and `docs/frames/gallery.html` (open in Chrome headless at 1600 px wide and take a screenshot). After a deploy, `python3 tests/check_deployed.py` checks the installed units. Developer notes with the full specification are in [`CLAUDE.md`](CLAUDE.md).
 
 ## Troubleshooting
 
@@ -234,10 +240,11 @@ More cases are listed in the developer notes.
 - **Development channels flag.** Claude Code asks you to confirm `--dangerously-load-development-channels` on every start, so the first start needs a person at the keyboard.
 - **One user, one session.** Exactly one Telegram user can use it, and it talks to one Claude Code session.
 - **The screen has to stay on** in Live mode. It cannot listen with the phone locked.
-- **Half-duplex.** You cannot interrupt a spoken answer by voice, only by tapping.
+- **Half-duplex.** While an answer is spoken the microphone is paused, so you stop a spoken answer by tapping (the orb or **Interrupt work**), not by voice. Saying "stop" works while Claude is working.
+- **Interrupt needs tmux.** If your Claude Code session does not run inside tmux, **Interrupt work** still stops the speech in the app but cannot stop Claude's turn.
 - **Your audio goes to a third-party speech service,** and Cloudflare can technically see the traffic that passes through the tunnel.
 - Recording is limited to three minutes and 6 MB per phrase. The queue is kept in memory.
 
 ## License
 
-[MIT](LICENSE). Third-party components are listed in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md). To report a security problem, see [SECURITY.md](SECURITY.md).
+[MIT](LICENSE). Third-party components are listed in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md). To report a security problem, see [SECURITY.md](SECURITY.md). What changed between versions is in [CHANGELOG.md](CHANGELOG.md).
