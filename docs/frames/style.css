@@ -1,0 +1,4 @@
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:Inter,"Liberation Sans",sans-serif;color:#eef0ff;-webkit-font-smoothing:antialiased}
+.phone{position:relative;border-radius:46px;padding:11px;background:linear-gradient(145deg,#3a3d4a,#15161c 40%,#2a2c36);box-shadow:0 0 0 1.5px #4a4d5c inset,0 30px 70px rgba(0,0,0,.55),0 0 90px rgba(120,90,255,.18)}
+.phone img{display:block;width:100%;border-radius:36px}

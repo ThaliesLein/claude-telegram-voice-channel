@@ -1,0 +1,27 @@
+# Browser libraries of Live mode: fetched by deploy.sh, pinned in web/vendor.lock
+web/vendor/
+
+# Channel server build output and dependencies
+channel/node_modules/
+channel/dist/
+node_modules/
+bun.lockb
+
+# Python
+__pycache__/
+*.pyc
+
+# Secrets and instance state: never commit
+.env
+env
+*.env
+internal_token
+state/
+glossary.txt
+url
+
+# Editors and OS
+.DS_Store
+*.swp
+.vscode/
+.idea/

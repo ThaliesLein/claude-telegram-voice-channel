@@ -1,0 +1,1423 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<meta name="color-scheme" content="dark">
+<meta name="theme-color" content="#070A14">
+<title>Voice</title>
+<link rel="icon" href="data:,">
+<script src="https://telegram.org/js/telegram-web-app.js"></script>
+<style>
+/* ---- tokens: "Aurora night". Always dark, whatever Telegram's theme is ---- */
+:root{
+  --bg:#070A14;--bg-2:#0E1326;--ink:#EEF1FF;--ink-2:rgba(238,241,255,.66);--ink-3:rgba(238,241,255,.40);
+  --glass:rgba(255,255,255,.06);--glass-2:rgba(255,255,255,.10);--stroke:rgba(255,255,255,.12);--danger:#FF5D73;
+  --grad:linear-gradient(135deg,#0E7490,#6D28D9);--ease:cubic-bezier(.2,.8,.2,1);color-scheme:dark;
+}
+*{box-sizing:border-box}
+html,body{margin:0;height:100%;overflow:hidden;background:var(--bg);color:var(--ink);font:16px/1.4 -apple-system,BlinkMacSystemFont,"SF Pro Text","Segoe UI",Roboto,system-ui,sans-serif;-webkit-font-smoothing:antialiased;-webkit-text-size-adjust:100%;overscroll-behavior:none}
+button{font:inherit;color:inherit;margin:0;touch-action:manipulation;-webkit-tap-highlight-color:transparent;cursor:pointer}
+button:active:not(:disabled){transform:scale(.97)}
+button:focus-visible,#speak:focus-visible{outline:2px solid var(--c2);outline-offset:3px}
+#app{position:relative;display:flex;flex-direction:column;width:100%;max-width:560px;margin:0 auto;height:100vh;height:100dvh;padding:env(safe-area-inset-top) calc(16px + env(safe-area-inset-right)) env(safe-area-inset-bottom) calc(16px + env(safe-area-inset-left))}
+/* state palettes: --c1..--c3 feed the orb, the aurora and the status dot; --lbl colours the state label */
+#app{--c1:#64748B;--c2:#94A3B8;--c3:#334155;--lbl:#94A3B8}
+#app[data-state=loading]{--c1:#6366F1;--c2:#94A3B8;--c3:#1E293B;--lbl:#A5B4FC}
+#app[data-state=listening]{--c1:#22D3EE;--c2:#2DD4BF;--c3:#3B82F6;--lbl:#22D3EE}
+#app[data-state=hearing]{--c1:#5EEAD4;--c2:#22D3EE;--c3:#A7F3D0;--lbl:#5EEAD4}
+#app[data-state=sending]{--c1:#818CF8;--c2:#60A5FA;--c3:#C4B5FD;--lbl:#A5B4FC}
+#app[data-state=thinking]{--c1:#A78BFA;--c2:#F472B6;--c3:#6366F1;--lbl:#C4B5FD}
+#app[data-state=speaking]{--c1:#FB7185;--c2:#FBBF24;--c3:#F472B6;--lbl:#FDA4AF}
+#app:has(#rec.on){--c1:#5EEAD4;--c2:#22D3EE;--c3:#A7F3D0}
+#app[data-mode=live] .ptt-only,#app[data-mode=ptt] .live-only{display:none}
+#app[data-nogo] #top,#app[data-nogo] #stage{display:none}
+
+/* ---- aurora: a fixed layer behind everything; only transform and opacity move ----
+   Each blob is a static blurred disc inside a wrapper that carries the drift. The blur is then applied once and the compositor
+   only moves the result (a blurred layer that animates itself is re-blurred every frame, which is very slow without a GPU). */
+#aurora{position:fixed;top:0;right:0;bottom:0;left:0;z-index:0;overflow:hidden;pointer-events:none;background:radial-gradient(130% 75% at 50% 0,var(--bg-2),var(--bg) 70%)}
+.drift{position:absolute;will-change:transform}
+.blob{position:absolute;left:0;top:0;width:100%;height:100%;border-radius:50%;filter:blur(60px);transition:background-color 1.2s ease}
+.d1{width:64vmax;height:48vmax;left:-22vmax;top:-16vmax;animation:d1 26s ease-in-out infinite alternate}
+.d2{width:58vmax;height:44vmax;right:-26vmax;top:28%;animation:d2 32s ease-in-out infinite alternate}
+.d3{width:66vmax;height:46vmax;left:-8vmax;bottom:-24vmax;animation:d3 19s ease-in-out infinite alternate}
+.b1{background-color:var(--c1);opacity:.4}
+.b2{background-color:var(--c2);opacity:.36}
+.b3{background-color:var(--c3);opacity:.45}
+/* a vignette that keeps the aurora a glow and not a wash, with a static film grain (feTurbulence, about 5% opaque) on top */
+#aurora::after{content:"";position:absolute;top:0;right:0;bottom:0;left:0;background:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='180' height='180'%3E%3Cfilter id='n' x='0' y='0'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.85' numOctaves='2' stitchTiles='stitch'/%3E%3CfeColorMatrix values='0 0 0 0 1 0 0 0 0 1 0 0 0 0 1 0 0 0 .11 0'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E") 0 0/180px 180px,radial-gradient(115% 78% at 50% 50%,rgba(7,10,20,.1) 0,rgba(7,10,20,.4) 62%,rgba(7,10,20,.72) 100%)}
+@keyframes d1{to{transform:translate(26vmin,20vmin) rotate(38deg) scale(1.16)}}
+@keyframes d2{to{transform:translate(-30vmin,24vmin) rotate(-32deg) scale(.88)}}
+@keyframes d3{to{transform:translate(32vmin,-14vmin) rotate(24deg) scale(1.12)}}
+
+/* ---- header: wordmark with the status dot, mode switch ---- */
+#top{position:relative;z-index:1;flex:0 0 52px;display:flex;align-items:center;justify-content:space-between;gap:12px}
+.brand{display:flex;align-items:center;gap:11px;min-width:0}
+.word{font-size:17px;font-weight:600;letter-spacing:.01em}
+.dot{position:relative;display:block;flex:0 0 8px;width:8px;height:8px;border-radius:50%;background:var(--c1);transition:background-color .6s ease}
+.dot::before{content:"";position:absolute;left:-6px;top:-6px;right:-6px;bottom:-6px;border-radius:50%;background:var(--c1);filter:blur(6px);opacity:.6;transition:background-color .6s ease}
+.dot::after{content:"";position:absolute;left:-3px;top:-3px;right:-3px;bottom:-3px;border-radius:50%;border:1.5px solid var(--c1);opacity:0}
+#app[data-state=listening] .dot::after,#app[data-state=hearing] .dot::after{animation:ping 1.8s ease-out infinite}
+#app:has(#rec.on) .dot::after{animation:ping 1.8s ease-out infinite}
+@keyframes ping{0%{transform:scale(.55);opacity:.85}100%{transform:scale(2);opacity:0}}
+
+/* ---- segmented controls: a glass track, a thumb that slides under the pressed button (placed by script) ---- */
+.seg{position:relative;display:inline-flex;padding:3px;border-radius:999px;background:var(--glass);border:1px solid var(--stroke)}
+.seg button{position:relative;z-index:1;border:0;background:transparent;color:var(--ink-2);padding:7px 14px;border-radius:999px;font-size:13.5px;font-weight:600;white-space:nowrap;transition:color .2s ease,transform .15s ease}
+.seg button[aria-pressed=true]{color:var(--ink)}
+.thumb{position:absolute;z-index:0;top:3px;bottom:3px;left:0;width:var(--tw,0);border-radius:999px;background:linear-gradient(180deg,rgba(255,255,255,.2),rgba(255,255,255,.1));box-shadow:inset 0 0 0 1px rgba(255,255,255,.16),0 4px 14px rgba(0,0,0,.35);transform:translateX(var(--tx,0));pointer-events:none}
+.seg.rd .thumb{transition:transform .28s cubic-bezier(.3,.85,.25,1),width .28s cubic-bezier(.3,.85,.25,1)}
+
+/* ---- log: bottom-anchored, scrolls under a top fade ---- */
+#stage{position:relative;z-index:1;flex:1 1 0;min-height:0;display:flex;flex-direction:column}
+#log{flex:1;min-height:0;display:flex;flex-direction:column;overflow-y:auto;padding:28px 0 8px;overscroll-behavior:contain;scrollbar-width:none;-webkit-mask-image:linear-gradient(to bottom,transparent 0,#000 28px);mask-image:linear-gradient(to bottom,transparent 0,#000 28px)}
+#log::-webkit-scrollbar{display:none}
+#log::before{content:"";flex:1 0 0}
+.msg{max-width:88%;margin:5px 0;padding:10px 14px;border-radius:18px;white-space:pre-wrap;word-wrap:break-word;overflow-wrap:anywhere}
+.msg.me{align-self:flex-end;max-width:84%;color:#fff;background:linear-gradient(135deg,#0E7490,#4F46E5);border-radius:18px 18px 6px 18px;box-shadow:0 6px 22px rgba(79,70,229,.28);transform-origin:100% 100%;animation:inR .26s var(--ease) backwards}
+.msg.cl{align-self:flex-start;background:var(--glass);border:1px solid var(--stroke);border-radius:18px 18px 18px 6px;animation:inL .4s var(--ease) backwards,wipe .7s ease-out backwards}
+.st{align-self:center;max-width:92%;margin:6px 0;padding:5px 13px;border-radius:999px;background:var(--glass);border:1px solid var(--stroke);color:var(--ink-2);font-size:13px;line-height:1.35;text-align:center;animation:fade .3s ease-out backwards}
+.st.err{color:var(--danger);border-color:var(--danger);animation:fade .3s ease-out backwards,shake .45s .05s ease-in-out}
+.typing{align-self:flex-start;display:flex;gap:5px;margin:5px 0;padding:15px 16px;border-radius:18px 18px 18px 6px;background:var(--glass);border:1px solid var(--stroke);animation:inL .3s var(--ease) backwards}
+.typing i{width:7px;height:7px;border-radius:50%;background:var(--ink-2);animation:bounce 1.1s ease-in-out infinite}
+.typing i:nth-child(2){animation-delay:.15s}.typing i:nth-child(3){animation-delay:.3s}
+.hint{position:absolute;left:24px;right:24px;top:0;bottom:0;display:flex;align-items:center;justify-content:center;text-align:center;color:var(--ink-2);font-size:16px;line-height:1.5;text-wrap:balance;pointer-events:none;transition:opacity .5s ease}
+#app.hasmsg .hint,#app:not([data-state=idle]) .hint{opacity:0}
+/* presence: the countdown before Live stops for lack of touches. It floats over the top of the log (no layout shift) and never takes a tap. */
+#idle{display:none;position:absolute;z-index:2;top:6px;left:0;right:0;width:fit-content;max-width:92%;margin:0 auto;padding:6px 14px;border-radius:20px;background:rgba(14,19,38,.9);border:1px solid rgba(255,93,115,.55);color:var(--ink);font-size:13px;line-height:1.35;text-align:center;pointer-events:none}
+#idle.on{display:block;animation:fade .3s ease-out backwards}
+/* confirmation card (voice_confirm): a sheet over the bottom of the screen, one at a time, the rest of the page dimmed (a shadow, so it takes no taps); its buttons wake up after a moment so a stray tap cannot answer */
+/* live progress: one small line under the controls while a reply is awaited */
+#prog{min-height:18px;margin-top:6px;padding:0 8px;font-size:13px;line-height:18px;text-align:center;color:var(--ink-2);opacity:0;transition:opacity .4s ease}
+#prog.on{opacity:1}
+#confirm{display:none;position:fixed;z-index:5;left:calc(16px + env(safe-area-inset-left));right:calc(16px + env(safe-area-inset-right));bottom:max(14px,env(safe-area-inset-bottom));max-width:528px;max-height:calc(100vh - 28px);max-height:calc(100dvh - 28px);margin:0 auto;padding:16px 16px 14px;overflow-y:auto;border-radius:22px;background:#0E1326;border:1px solid rgba(255,255,255,.22);box-shadow:0 0 0 100vmax rgba(7,10,20,.6),0 14px 44px rgba(0,0,0,.6)}
+#confirm.on{display:block;animation:fade .25s ease-out backwards}
+#confirm h2{margin:0 0 6px;font-size:14px;line-height:1.3;font-weight:600;letter-spacing:.02em;color:var(--ink-2)}
+#cf-action{margin:0 0 8px;max-height:40vh;overflow-y:auto;font-size:17px;line-height:1.35;color:var(--ink);white-space:pre-wrap;overflow-wrap:anywhere}
+#cf-time{margin:0 0 12px;font-size:13px;color:var(--ink-2);font-variant-numeric:tabular-nums}
+#cf-btns{display:flex;gap:10px}
+#cf-btns button{flex:1 1 0;min-width:0;height:48px;padding:0 10px;border:1px solid var(--stroke);border-radius:24px;background:var(--glass);color:var(--ink);font-size:16px;font-weight:600;transition:opacity .2s ease,transform .15s ease}
+#cf-btns #cf-yes{background:var(--grad);border-color:transparent;color:#fff}
+#cf-btns button:disabled{opacity:.38;cursor:default}
+@keyframes inR{from{opacity:0;transform:translateX(12px) scale(.96)}}
+@keyframes inL{from{opacity:0;transform:translateY(8px)}}
+/* a soft top-to-bottom reveal: the mask image is three times the bubble's height and slides up */
+@keyframes wipe{
+  from{-webkit-mask-image:linear-gradient(#000 33.3%,transparent 66.6%);mask-image:linear-gradient(#000 33.3%,transparent 66.6%);-webkit-mask-size:100% 300%;mask-size:100% 300%;-webkit-mask-repeat:no-repeat;mask-repeat:no-repeat;-webkit-mask-position:0 100%;mask-position:0 100%}
+  to{-webkit-mask-image:linear-gradient(#000 33.3%,transparent 66.6%);mask-image:linear-gradient(#000 33.3%,transparent 66.6%);-webkit-mask-size:100% 300%;mask-size:100% 300%;-webkit-mask-repeat:no-repeat;mask-repeat:no-repeat;-webkit-mask-position:0 0;mask-position:0 0}
+}
+@keyframes fade{from{opacity:0;transform:translateY(4px)}}
+@keyframes shake{0%,100%{transform:none}20%{transform:translateX(-5px)}40%{transform:translateX(5px)}60%{transform:translateX(-3px)}80%{transform:translateX(3px)}}
+@keyframes bounce{0%,60%,100%{transform:none;opacity:.5}30%{transform:translateY(-5px);opacity:1}}
+
+/* ---- dock ---- */
+#bar{position:relative;z-index:1;flex:0 0 auto;display:flex;flex-direction:column;align-items:center;padding:0 0 12px}
+#bar .live-only,#bar .ptt-only{display:flex;flex-direction:column;align-items:center;width:100%}
+/* Live mode: the orb. A canvas (1.5x the orb, so glow and rings fit) is drawn by script; --lvl is the input level for the CSS orb. */
+.orb{--d:clamp(148px,30vh,240px);--lvl:0;position:relative;display:block;flex:0 0 auto;width:var(--d);height:var(--d);margin:0 auto;padding:0;border:0;border-radius:50%;background:none;color:#fff;transition:transform .15s ease}
+.orb canvas{position:absolute;left:-25%;top:-25%;width:150%;height:150%;pointer-events:none}
+.orb::before,.orb::after{content:"";position:absolute;z-index:1;border-radius:50%;pointer-events:none;opacity:0;transition:opacity .45s ease;animation:spin 1.5s linear infinite;-webkit-mask-image:radial-gradient(farthest-side,transparent calc(100% - 4px),#000 calc(100% - 3px));mask-image:radial-gradient(farthest-side,transparent calc(100% - 4px),#000 calc(100% - 3px))}
+.orb::before{left:2%;top:2%;right:2%;bottom:2%;background:conic-gradient(from 0deg,transparent 0 66%,var(--c2) 90%,#fff 100%);-webkit-mask-image:radial-gradient(farthest-side,transparent calc(100% - 3px),#000 calc(100% - 2px));mask-image:radial-gradient(farthest-side,transparent calc(100% - 3px),#000 calc(100% - 2px))}
+.orb::after{left:-3%;top:-3%;right:-3%;bottom:-3%;background:conic-gradient(from 0deg,transparent 0,var(--c2) 40%,var(--c1) 75%,transparent 100%);animation-duration:3.2s}
+.orb[data-state=loading]::before{opacity:.95}
+.orb[data-state=thinking]::after{opacity:.8}
+.orb .ic{position:absolute;z-index:2;left:50%;top:50%;width:34px;height:34px;margin:-17px 0 0 -17px;fill:#fff;opacity:0;transform:scale(.55);transition:opacity .25s ease,transform .35s var(--ease);filter:drop-shadow(0 1px 8px rgba(7,10,20,.55));pointer-events:none}
+.orb .ic-mic{opacity:1;transform:none}
+.orb[data-state=speaking] .ic-mic,.orb[data-state=sending] .ic-mic,.orb[data-state=thinking] .ic-mic{opacity:0;transform:scale(.55)}
+.orb[data-state=speaking] .ic-spk,.orb[data-state=sending] .ic-dots,.orb[data-state=thinking] .ic-dots{opacity:1;transform:none}
+.orb .ic-dots{display:flex;align-items:center;justify-content:center;gap:5px;width:44px;margin-left:-22px}
+.ic-dots i{width:8px;height:8px;border-radius:50%;background:#fff}
+.orb[data-state=sending] .ic-dots i,.orb[data-state=thinking] .ic-dots i{animation:dt 1s ease-in-out infinite}
+.ic-dots i:nth-child(2){animation-delay:.15s}.ic-dots i:nth-child(3){animation-delay:.3s}
+@keyframes spin{to{transform:rotate(1turn)}}
+@keyframes dt{50%{opacity:.3;transform:translateY(-3px)}}
+/* the CSS orb: three colour pools in a sphere. Used when the canvas is not (reduced motion, no canvas, renderer error) and on the "open in Telegram" card */
+.halo,.face{display:none;position:absolute;border-radius:50%;pointer-events:none}
+#app.nofx .halo,#app.nofx .face,.nogo-orb .halo,.nogo-orb .face{display:block}
+#app.nofx .orb canvas{display:none}
+.halo{left:-24%;top:-24%;right:-24%;bottom:-24%;background-color:var(--c1);opacity:.45;transition:background-color .8s ease;-webkit-mask-image:radial-gradient(closest-side,#000 35%,transparent 100%);mask-image:radial-gradient(closest-side,#000 35%,transparent 100%)}
+.face{left:6%;top:6%;right:6%;bottom:6%;overflow:hidden;background-color:var(--c3);transition:background-color .8s ease,transform .08s linear;transform:scale(calc(1 + var(--lvl) * .07))}
+.face i{position:absolute;border-radius:50%;transition:background-color .8s ease;-webkit-mask-image:radial-gradient(closest-side,#000 30%,transparent 100%);mask-image:radial-gradient(closest-side,#000 30%,transparent 100%)}
+.face i:first-child{left:-10%;top:-12%;width:82%;height:82%;background-color:var(--c1)}
+.face i:last-child{right:-14%;bottom:-14%;width:76%;height:76%;background-color:var(--c2);opacity:.85}
+.face::after{content:"";position:absolute;left:0;top:0;right:0;bottom:0;border-radius:50%;background:radial-gradient(circle at 32% 26%,rgba(255,255,255,.42),rgba(255,255,255,0) 40%),radial-gradient(circle at 50% 50%,rgba(4,8,24,0) 58%,rgba(4,8,24,.5) 100%)}
+#app.nofx .orb:not([data-state=idle]):not([data-state=paused]) .halo{animation:hpulse 2.6s ease-in-out infinite}
+@keyframes hpulse{50%{opacity:.22}}
+#state{position:relative;min-height:24px;margin-top:6px;padding:0 4px;font-size:15px;line-height:24px;font-weight:500;letter-spacing:.01em;text-align:center;color:var(--lbl);text-shadow:0 1px 10px rgba(7,10,20,.7);transition:color .6s ease}
+/* two animation names: swapping the class restarts the animation each time the label changes */
+#state.ca{animation:lbl .2s ease-out}
+#state.cb{animation:lbl2 .2s ease-out}
+@keyframes lbl{from{opacity:0;transform:translateY(4px)}}
+@keyframes lbl2{from{opacity:0;transform:translateY(4px)}}
+#livebtn{position:relative;overflow:hidden;display:block;width:100%;max-width:340px;height:52px;margin:6px auto 0;border:1px solid transparent;border-radius:26px;background:var(--grad);color:#fff;font-size:16px;font-weight:600;letter-spacing:.01em;box-shadow:0 8px 26px rgba(79,70,229,.32),inset 0 1px 0 rgba(255,255,255,.2);transition:transform .15s ease,box-shadow .25s ease,border-color .25s ease}
+#livebtn::after{content:"";position:absolute;top:0;bottom:0;left:0;width:42%;background:linear-gradient(105deg,rgba(255,255,255,0),rgba(255,255,255,.3),rgba(255,255,255,0));transform:translateX(-140%) skewX(-18deg);animation:sheen 4.2s ease-in-out infinite;pointer-events:none}
+#livebtn.on{background:var(--glass);border-color:rgba(255,93,115,.55);color:var(--ink);box-shadow:0 0 0 1px rgba(255,93,115,.12),0 8px 26px rgba(255,93,115,.14)}
+#livebtn.on::after{display:none}
+@keyframes sheen{0%,60%{transform:translateX(-140%) skewX(-18deg)}100%{transform:translateX(340%) skewX(-18deg)}}
+#silence{width:100%;max-width:340px;margin-top:14px;display:flex;flex-direction:column;align-items:center;gap:6px}
+.cap{font-size:12px;letter-spacing:.02em;color:var(--ink-2)}
+#silopts{width:100%}
+#silopts button{flex:1 1 auto;min-width:0;padding:7px 6px;font-size:12.5px;line-height:1.2;white-space:normal}
+/* push-to-talk */
+#timer{min-height:26px;font-size:19px;line-height:26px;font-weight:500;color:var(--ink);font-variant-numeric:tabular-nums;font-feature-settings:"tnum"}
+#rec{position:relative;width:120px;height:120px;margin:6px 0;border:0;border-radius:50%;background:radial-gradient(circle at 32% 24%,rgba(255,255,255,.3),rgba(255,255,255,0) 46%),var(--grad);color:#fff;font-size:16px;font-weight:600;letter-spacing:.01em;box-shadow:0 10px 36px rgba(109,40,217,.4),inset 0 1px 0 rgba(255,255,255,.22);transition:transform .15s ease,box-shadow .3s ease}
+#rec.on{background:radial-gradient(circle at 32% 24%,rgba(255,255,255,.26),rgba(255,255,255,0) 46%),linear-gradient(135deg,#D13F2C,#BE185D);box-shadow:0 10px 40px rgba(244,63,94,.5),inset 0 1px 0 rgba(255,255,255,.22)}
+#rec::before,#rec::after{content:"";position:absolute;left:0;top:0;right:0;bottom:0;border-radius:50%;border:2px solid rgba(251,113,133,.75);opacity:0;pointer-events:none}
+#rec.on::before,#rec.on::after{animation:pulse 1.8s ease-out infinite}
+#rec.on::after{animation-delay:.9s}
+#rec:disabled{opacity:.5}
+@keyframes pulse{0%{transform:scale(1);opacity:.7}100%{transform:scale(1.55);opacity:0}}
+/* both modes */
+#ctl{position:relative;display:flex;gap:14px;justify-content:center;align-items:center;margin-top:12px;font-size:14px;color:var(--ink-2)}
+#stopaudio{border:1px solid var(--stroke);background:var(--glass);color:var(--ink);padding:8px 15px;border-radius:999px;font-size:13.5px;font-weight:500;transition:transform .15s ease,background-color .2s ease}
+#ctl label{display:flex;align-items:center;gap:10px;cursor:pointer}
+/* the switch: the checkbox itself, drawn without the native look, so a click on it (or its label) toggles it */
+#speak{-webkit-appearance:none;appearance:none;position:relative;flex:0 0 auto;width:46px;height:28px;margin:0;border-radius:14px;background:var(--glass-2);border:1px solid var(--stroke);transition:background-color .2s ease,border-color .2s ease}
+#speak::before{content:"";position:absolute;left:2px;top:2px;width:22px;height:22px;border-radius:50%;background:var(--ink-2);box-shadow:0 2px 6px rgba(0,0,0,.35);transition:transform .22s var(--ease),background-color .2s ease}
+#speak:checked{background:var(--grad);border-color:transparent}
+#speak:checked::before{transform:translateX(18px);background:#fff}
+#nogo{display:none;margin:auto;max-width:320px;padding:30px 24px 26px;text-align:center;border-radius:26px;background:var(--glass);border:1px solid var(--stroke);position:relative;z-index:1}
+#nogo p{margin:18px 0 0;font-size:16px;line-height:1.5;color:var(--ink)}
+.nogo-orb{position:relative;display:block;width:96px;height:96px;margin:0 auto}
+@media (hover:hover){
+  .seg button:hover{color:var(--ink)}
+  #stopaudio:hover,#livebtn.on:hover{background:var(--glass-2)}
+  #livebtn:not(.on):hover{box-shadow:0 10px 32px rgba(79,70,229,.5),inset 0 1px 0 rgba(255,255,255,.2)}
+}
+@media (max-width:359px){#silopts button{padding:7px 3px;font-size:11.5px}}
+@media (max-height:640px){#silence{margin-top:10px}#ctl{margin-top:8px}#bar{padding-bottom:8px}}
+@media (max-height:480px){.orb{--d:104px}#silence{display:none}}
+@media (prefers-reduced-motion:reduce){
+  .drift,.msg,.st,.typing,.typing i,#idle.on,#confirm.on,#livebtn::after,#rec::before,#rec::after,.orb::before,.orb::after,.dot::after,#state,.orb .ic-dots i,.halo{animation:none!important}
+  .orb::before,.orb::after{display:none}
+  .thumb,.seg.rd .thumb{transition:none}
+}
+</style>
+</head>
+<body>
+<div id="app" data-mode="live" data-state="idle">
+  <div id="aurora" aria-hidden="true"><i class="drift d1"><i class="blob b1"></i></i><i class="drift d2"><i class="blob b2"></i></i><i class="drift d3"><i class="blob b3"></i></i></div>
+  <div id="nogo">
+    <span class="nogo-orb" aria-hidden="true"><span class="halo"></span><span class="face"><i></i><i></i></span></span>
+    <p data-i18n="nogo">Open this page with the Voice button in the bot</p>
+  </div>
+  <header id="top">
+    <div class="brand"><i class="dot" aria-hidden="true"></i><span class="word" data-i18n="title">Voice</span></div>
+    <div class="seg" id="modes">
+      <span class="thumb" aria-hidden="true"></span>
+      <button id="mode-live" data-mode="live" data-i18n="modeLive" aria-pressed="true">Live</button>
+      <button id="mode-ptt" data-mode="ptt" data-i18n="modePtt" aria-pressed="false">Push-to-talk</button>
+    </div>
+  </header>
+  <main id="stage">
+    <div id="log"></div>
+    <div id="idle" role="timer"></div>
+    <div class="hint live-only" data-i18n="hintLive">Tap “Start conversation” and just talk</div>
+    <div class="hint ptt-only" data-i18n="hintPtt">Tap “Speak”, say something, then tap again</div>
+  </main>
+  <div id="bar">
+    <div class="live-only">
+      <button id="orb" class="orb" data-state="idle" type="button">
+        <canvas aria-hidden="true"></canvas>
+        <span class="halo" aria-hidden="true"></span><span class="face" aria-hidden="true"><i></i><i></i></span>
+        <svg class="ic ic-mic" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 14c1.66 0 3-1.34 3-3V5c0-1.66-1.34-3-3-3S9 3.34 9 5v6c0 1.66 1.34 3 3 3zm5.3-3c0 3-2.54 5.1-5.3 5.1S6.7 14 6.7 11H5c0 3.41 2.72 6.23 6 6.72V21h2v-3.28c3.28-.48 6-3.3 6-6.72h-1.7z"/></svg>
+        <svg class="ic ic-spk" viewBox="0 0 24 24" aria-hidden="true"><path d="M3 9v6h4l5 5V4L7 9H3zm13.5 3A4.5 4.5 0 0 0 14 7.97v8.05c1.48-.73 2.5-2.25 2.5-4.02zM14 3.23v2.06c2.89.86 5 3.54 5 6.71s-2.11 5.85-5 6.71v2.06c4.01-.91 7-4.49 7-8.77s-2.99-7.86-7-8.77z"/></svg>
+        <span class="ic ic-dots" aria-hidden="true"><i></i><i></i><i></i></span>
+      </button>
+      <div id="state" aria-live="polite"></div>
+      <button id="livebtn" type="button" data-i18n="startLive">Start conversation</button>
+      <div id="silence">
+        <div class="cap" data-i18n="silenceLabel">Pause before sending</div>
+        <div class="seg" id="silopts">
+          <span class="thumb" aria-hidden="true"></span>
+          <button data-sil="short" data-i18n="silShort" aria-pressed="false">Short 0.8 s</button>
+          <button data-sil="normal" data-i18n="silNormal" aria-pressed="true">Normal 1.5 s</button>
+          <button data-sil="long" data-i18n="silLong" aria-pressed="false">Long 2.5 s</button>
+        </div>
+      </div>
+    </div>
+    <div class="ptt-only">
+      <div id="timer"></div>
+      <button id="rec" data-i18n="rec">Speak</button>
+    </div>
+    <div id="prog" role="status"></div>
+    <div id="ctl">
+      <button id="stopaudio" data-i18n="stopAudio">Stop audio</button>
+      <label><input type="checkbox" id="speak" checked><span data-i18n="speak">Speak replies</span></label>
+    </div>
+  </div>
+<div id="confirm" role="alertdialog" aria-labelledby="cf-title" aria-describedby="cf-action">
+  <h2 id="cf-title" data-i18n="confirmTitle">Confirm this action?</h2>
+  <p id="cf-action"></p>
+  <p id="cf-time"></p>
+  <div id="cf-btns">
+    <button id="cf-no" type="button" data-i18n="confirmNo" disabled>Decline</button>
+    <button id="cf-yes" type="button" data-i18n="confirmYes" disabled>Confirm</button>
+  </div>
+</div>
+</div>
+<audio id="player" preload="auto"></audio>
+<script>
+(function(){
+var tg = window.Telegram && Telegram.WebApp;
+var initData = tg ? tg.initData : "";
+if (tg) { try { tg.ready(); tg.expand(); } catch(e){} }
+// Telegram's own chrome follows the page: always the night background. Each call is guarded and made only when the client's version has it.
+function tgPaint(){
+  if (!tg) return;
+  try { if (tg.isVersionAtLeast("6.9")) tg.setHeaderColor("#070A14"); } catch(e){}   // a hex colour needs 6.9
+  try { if (tg.isVersionAtLeast("6.1")) tg.setBackgroundColor("#070A14"); } catch(e){}
+  try { if (tg.isVersionAtLeast("7.10") && tg.setBottomBarColor) tg.setBottomBarColor("#070A14"); } catch(e){}
+}
+tgPaint();
+// Haptics: only where the client has them (Bot API 6.1+). kind: "impact" (style), "select", "notify" (type).
+function haptic(kind, style){
+  try {
+    var h = tg && tg.HapticFeedback;
+    if (!h || !tg.isVersionAtLeast("6.1")) return;
+    if (kind === "impact") h.impactOccurred(style); else if (kind === "select") h.selectionChanged(); else h.notificationOccurred(style);
+  } catch(e){}
+}
+var $ = function(id){ return document.getElementById(id); };
+
+// ---- i18n: English by default, Russian when the Telegram user's language_code starts with "ru" ----
+const I18N = {
+  en: {
+    title: "Voice",
+    nogo: "Open this page with the Voice button in the bot",
+    rec: "Speak",
+    recStop: "Stop",
+    stopAudio: "Stop audio",
+    speak: "Speak replies",
+    noMic: "No microphone access",
+    tooShort: "Too short",
+    recognizing: "Recognizing…",
+    errorPrefix: "Error: ",
+    heardNothing: "Didn't catch that",
+    sent: "Sent…",
+    netError: "Network error",
+    ack: "Got it, thinking…",
+    hintLive: "Tap “Start conversation” and just talk",
+    hintPtt: "Tap “Speak”, say something, then tap again",
+    modeLive: "Live",
+    modePtt: "Push-to-talk",
+    startLive: "Start conversation",
+    stopLive: "Stop",
+    silenceLabel: "Pause before sending",
+    silShort: "Short 0.8 s",
+    silNormal: "Normal 1.5 s",
+    silLong: "Long 2.5 s",
+    listening: "Listening…",
+    hearing: "Hearing you…",
+    sending: "Sending…",
+    thinking: "Thinking…",
+    speaking: "Speaking… (tap to interrupt)",
+    paused: "Paused",
+    loadingVad: "Loading voice detection…",
+    basicTag: "basic mode",
+    basicNote: "The speech model could not be loaded: using basic voice detection.",
+    liveError: "Could not start the conversation",
+    idleWarn: "Live stops in {n} s: tap anywhere to keep talking",
+    idleStopped: "Conversation stopped: no taps for a while",
+    hiddenStopped: "Conversation stopped: the page was in the background too long",
+    voiceOff: "Voice input is turned off on the server",
+    confirmTitle: "Confirm this action?",
+    confirmYes: "Confirm",
+    confirmNo: "Decline",
+    confirmLeft: "Expires in {n} s",
+    confirmStale: "Reopen the app from the menu to confirm",
+    confirmGone: "This request is no longer valid",
+    progRead: "Reading files",
+    progEdit: "Editing files",
+    progRun: "Running a command",
+    progSearch: "Searching",
+    progWeb: "Browsing the web",
+    progAgent: "A sub-agent is working",
+    progTelegram: "Writing in Telegram",
+    progVoice: "Preparing the answer",
+    progOther: "Working"
+  },
+  ru: {
+    title: "Голос",
+    nogo: "Открой через кнопку «Голос» в боте",
+    rec: "Говорить",
+    recStop: "Стоп",
+    stopAudio: "Стоп звук",
+    speak: "Озвучивать",
+    noMic: "Нет доступа к микрофону",
+    tooShort: "Слишком коротко",
+    recognizing: "Распознаю…",
+    errorPrefix: "Ошибка: ",
+    heardNothing: "Не удалось расслышать",
+    sent: "Отправлено…",
+    netError: "Ошибка сети",
+    ack: "Принято, думаю…",
+    hintLive: "Нажми «Начать разговор» и просто говори",
+    hintPtt: "Нажми «Говорить», скажи и нажми ещё раз",
+    modeLive: "Диалог",
+    modePtt: "По кнопке",
+    startLive: "Начать разговор",
+    stopLive: "Стоп",
+    silenceLabel: "Пауза перед отправкой",
+    silShort: "Короткая 0,8 с",
+    silNormal: "Обычная 1,5 с",
+    silLong: "Длинная 2,5 с",
+    listening: "Слушаю…",
+    hearing: "Слышу тебя…",
+    sending: "Отправка…",
+    thinking: "Думаю…",
+    speaking: "Говорю… (нажми, чтобы прервать)",
+    paused: "Пауза",
+    loadingVad: "Загрузка определения речи…",
+    basicTag: "простой режим",
+    basicNote: "Модель речи недоступна: используется простое определение речи.",
+    liveError: "Не удалось начать разговор",
+    idleWarn: "Диалог остановится через {n} с: нажми в любом месте, чтобы говорить дальше",
+    idleStopped: "Разговор остановлен: нет касаний экрана",
+    hiddenStopped: "Разговор остановлен: страница слишком долго в фоне",
+    voiceOff: "Голосовой ввод выключен на сервере",
+    confirmTitle: "Подтвердить действие?",
+    confirmYes: "Подтвердить",
+    confirmNo: "Отклонить",
+    confirmLeft: "Осталось {n} с",
+    confirmStale: "Открой приложение заново из меню, чтобы подтвердить",
+    confirmGone: "Запрос больше не действует",
+    progRead: "Читаю файлы",
+    progEdit: "Правлю файлы",
+    progRun: "Выполняю команду",
+    progSearch: "Ищу",
+    progWeb: "Смотрю в интернете",
+    progAgent: "Работает субагент",
+    progTelegram: "Пишу в Telegram",
+    progVoice: "Готовлю ответ",
+    progOther: "Работаю"
+  }
+};
+var tgUser = tg && tg.initDataUnsafe && tg.initDataUnsafe.user;
+var LANG = /^ru/i.test((tgUser && tgUser.language_code) || "") ? "ru" : "en";
+function t(key){ return (I18N[LANG] && I18N[LANG][key]) || I18N.en[key] || key; }
+document.documentElement.lang = LANG;
+document.title = t("title");
+Array.prototype.forEach.call(document.querySelectorAll("[data-i18n]"), function(el){ el.textContent = t(el.getAttribute("data-i18n")); });
+var logEl = $("log"), recBtn = $("rec"), timerEl = $("timer"), player = $("player"), speakEl = $("speak");
+var appEl = $("app"), orb = $("orb"), stateEl = $("state"), liveBtn = $("livebtn");
+orb.setAttribute("aria-label", t("startLive"));
+if (!initData) { $("nogo").style.display = "block"; logEl.style.display = "none"; $("bar").style.display = "none"; appEl.setAttribute("data-nogo", ""); return; }
+
+// ---- CSP violation reports. The server sends a strict Content-Security-Policy; what the browser blocks is reported back: the directive
+//      and the origin of the blocked resource (never its path or query), each pair once, at most 10 reports per page load, errors ignored. ----
+var cspSeen = {}, cspSent = 0;
+function cspBlocked(u){
+  u = String(u || "");
+  try { var x = new URL(u); return x.origin !== "null" ? x.origin : x.protocol; } catch(e){ return u.slice(0, 40); }   // "inline", "eval" and "data" are not URLs
+}
+document.addEventListener("securitypolicyviolation", function(e){
+  try {
+    var d = String(e.effectiveDirective || e.violatedDirective || "").slice(0, 60), b = cspBlocked(e.blockedURI).slice(0, 120), k = d + " " + b;
+    if (cspSeen[k] || cspSent >= 10) return;
+    cspSeen[k] = true; cspSent++;
+    fetch("api/csp-report", {method:"POST", headers:{"X-Init-Data":initData, "Content-Type":"application/json"}, body:JSON.stringify({directive:d, blocked:b})}).catch(function(){});
+  } catch(x){}
+});
+
+// ---- preferences. localStorage can be missing or throw (private mode, blocked data): every access is guarded ----
+function lsGet(k){ try { return localStorage.getItem(k); } catch(e){ return null; } }
+function lsSet(k, v){ try { localStorage.setItem(k, v); } catch(e){} }
+if (lsGet("speak") === "0") speakEl.checked = false;
+speakEl.onchange = function(){ lsSet("speak", speakEl.checked ? "1" : "0"); if (!speakEl.checked) stopAudio(); };
+
+// ---- log: messages, status lines and the typing bubble ----
+var RM = window.matchMedia ? window.matchMedia("(prefers-reduced-motion: reduce)") : null;
+function reduced(){ return !!(RM && RM.matches); }
+function toBottom(){
+  var top = logEl.scrollHeight - logEl.clientHeight;
+  try { if (reduced() || !logEl.scrollTo) logEl.scrollTop = top; else logEl.scrollTo({top: top, behavior: "smooth"}); } catch(e){ logEl.scrollTop = top; }
+}
+// Three bouncing dots on the assistant's side while a reply is awaited. Neither .msg nor .st: it is not a message.
+var typingEl = document.createElement("div");
+typingEl.className = "typing"; typingEl.setAttribute("aria-hidden", "true"); typingEl.innerHTML = "<i></i><i></i><i></i>";
+function keepTyping(){ if (typingEl.parentNode === logEl && logEl.lastChild !== typingEl) logEl.appendChild(typingEl); }
+var waiting = false, waitTimer = null;   // push-to-talk: the request was acknowledged, the reply is awaited
+// ---- live progress: what the session is doing while a reply is awaited (events of type "progress", kind only) ----
+var PROG_FADE_MS = 20000;
+var PROG = {read: function(){ return t("progRead"); }, edit: function(){ return t("progEdit"); }, run: function(){ return t("progRun"); },
+            search: function(){ return t("progSearch"); }, web: function(){ return t("progWeb"); }, agent: function(){ return t("progAgent"); },
+            telegram: function(){ return t("progTelegram"); }, voice: function(){ return t("progVoice"); }, other: function(){ return t("progOther"); }};
+var progEl = $("prog"), progTimer = null;
+function progAllowed(){ return live ? uiState() === "thinking" : waiting; }   // never outside Thinking
+function progClear(){ clearTimeout(progTimer); progTimer = null; progEl.classList.remove("on"); progEl.textContent = ""; }
+function progShow(kind){
+  if (kind === "idle" || !Object.prototype.hasOwnProperty.call(PROG, kind) || !progAllowed()) { progClear(); return; }
+  progEl.textContent = PROG[kind]();
+  progEl.classList.add("on");
+  clearTimeout(progTimer); progTimer = setTimeout(progClear, PROG_FADE_MS);
+}
+function syncTyping(){
+  if (progTimer && !progAllowed()) progClear();
+  var on = thinking || waiting;
+  if (on && typingEl.parentNode !== logEl) { logEl.appendChild(typingEl); toBottom(); }
+  else if (!on && typingEl.parentNode) typingEl.parentNode.removeChild(typingEl);
+}
+function setWaiting(on){
+  waiting = on; clearTimeout(waitTimer);
+  if (on) waitTimer = setTimeout(function(){ waiting = false; syncTyping(); }, THINK_TIMEOUT_MS);
+  syncTyping();
+}
+function add(cls, text){
+  var d = document.createElement("div"); d.className = cls; d.textContent = text;
+  logEl.appendChild(d); keepTyping();
+  if (cls.indexOf("msg") === 0) appEl.classList.add("hasmsg");   // the empty-state hint fades out with the first message
+  toBottom(); return d;
+}
+var statusEl = null;
+function setStatus(text, isErr){
+  if (!statusEl) statusEl = add("st", "");
+  statusEl.textContent = text; statusEl.className = "st" + (isErr ? " err" : "");
+  statusEl.style.animation = "none"; void statusEl.offsetWidth; statusEl.style.animation = "";   // plays the entrance (and the shake) again
+  if (isErr) haptic("notify", "error");
+  keepTyping(); toBottom();
+}
+function clearStatus(){ if (statusEl) { statusEl.remove(); statusEl = null; } }
+
+// ---- Live mode: constants ----
+var SILENCE_MS = {short: 800, normal: 1500, long: 2500};  // silence that ends a phrase (presets of the pause setting)
+var MIN_SPEECH_MS = 400;      // a shorter detection is a misfire and is dropped without upload
+var PRE_PAD_MS = 300;         // audio kept from before the detected start of speech
+var MAX_PHRASE_MS = 60000;    // a longer phrase is cut and sent at this length
+var RESUME_DELAY_MS = 300;    // listening resumes this long after reply playback ends
+var KEEP_TAIL_MS = 600;       // trailing silence kept in an uploaded phrase (the rest of the pause is trimmed)
+var VAD_LOAD_TIMEOUT_MS = 45000;
+var THINK_TIMEOUT_MS = 120000;
+var FRAME = 512;              // samples per detector frame at 16 kHz, 32 ms
+var VENDOR = new URL("vendor/", location.href).href;   // self-hosted voice detection assets, served by voice-web
+var IDLE_WARN_MS = 60000;     // the "Live stops in N s" countdown shows during the last minute of the idle time
+var LIVE_IDLE_MS = 900000;    // Live stops after this long without a touch or click (api/config live_idle_ms; 0 = never)
+var HIDDEN_STOP_MS = 60000;   // ...and after this long in the background, hidden or deactivated (api/config hidden_stop_ms; 0 = never)
+var AUDIO_URL = /^\/a\/[0-9a-f-]{36}\.(wav|mp3)$/;   // the only form of reply audio URL the server hands out
+function cfgMs(v, d){ return typeof v === "number" && isFinite(v) && v >= 0 ? Math.round(v) : d; }
+// Settings of this instance, once at start. Without the endpoint (an older server) or when the request fails, the defaults above stay.
+(async function(){
+  try {
+    var r = await fetch("api/config", {headers:{"X-Init-Data":initData}});
+    if (!r.ok) return;
+    var j = await r.json();
+    LIVE_IDLE_MS = cfgMs(j.live_idle_ms, LIVE_IDLE_MS); HIDDEN_STOP_MS = cfgMs(j.hidden_stop_ms, HIDDEN_STOP_MS);
+  } catch(e){}
+})();
+
+var mode = lsGet("mode") === "ptt" ? "ptt" : "live";
+var silence = SILENCE_MS[lsGet("silence")] ? lsGet("silence") : "normal";
+
+var live = null;              // the running Live session, or null
+var liveSeq = 0;
+var uploads = 0;              // phrases being sent (transcription included)
+var thinking = false, thinkTimer = null;
+var holds = {};               // why the detector is paused: "play" (reply audio) or "hidden" (page not visible)
+var resumeTimer = null;
+
+// ---- audio playback queue ----
+var queue = [], playing = false, unlocked = false;
+function unlock(){
+  if (unlocked) return; unlocked = true;
+  try { player.src = "data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEAQB8AAEAfAAABAAgAZGF0YQAAAAA="; var pr = player.play(); if (pr && pr.catch) pr.catch(function(){}); } catch(e){}
+}
+function next(){
+  if (playing || !queue.length) return;
+  if (live && live.heard) return;   // never talk over the user: retried when the phrase ends
+  playing = true; playStarted(); watchStall();
+  player.src = queue.shift();
+  var pr = player.play(); if (pr && pr.catch) pr.catch(function(){ if (playing) playbackDone(); });
+  render();
+}
+function playbackDone(){
+  if (!playing) return;
+  playing = false; clearInterval(stallTimer);
+  if (queue.length) next(); else { playEnded(); render(); }
+}
+player.onended = player.onerror = playbackDone;
+// The audio can be paused from outside (a call, a media key) or stall; Live must not stay deaf because of that.
+player.onpause = function(){
+  if (playing && !player.ended) setTimeout(function(){ if (playing && player.paused && !player.ended) playbackDone(); }, 500);
+};
+var stallTimer = null;
+function watchStall(){
+  clearInterval(stallTimer);
+  var lastT = -1, same = 0;
+  stallTimer = setInterval(function(){
+    if (!playing) { clearInterval(stallTimer); return; }
+    if (player.currentTime === lastT) same++; else { same = 0; lastT = player.currentTime; }
+    if (same >= 5) playbackDone();   // no progress for about 10 s
+  }, 2000);
+}
+function stopAudio(){
+  var was = playing;
+  queue = []; playing = false; clearInterval(stallTimer);
+  try { player.pause(); player.removeAttribute("src"); } catch(e){}
+  if (was) playEnded();
+  render();
+}
+$("stopaudio").onclick = stopAudio;
+// Half-duplex: the detector is paused while reply audio plays and resumed shortly after it ends.
+function playStarted(){ clearTimeout(resumeTimer); resumeTimer = null; setHold("play", true); }
+function playEnded(){
+  clearTimeout(resumeTimer);
+  var L = live;
+  if (L && idleOver(L)) { endLive(t("idleStopped"), true); return; }   // the idle time ran out while the reply was spoken: stop now, before listening resumes
+  resumeTimer = setTimeout(function(){ resumeTimer = null; if (!playing) setHold("play", false); }, RESUME_DELAY_MS);
+}
+
+// ---- uploads ----
+async function postUtterance(pcm){
+  var ctl = new AbortController(), to = setTimeout(function(){ ctl.abort(); }, 90000);
+  try {
+    var r = await fetch("api/utterance", {method:"POST", headers:{"X-Init-Data":initData, "Content-Type":"application/octet-stream"}, body:pcm.buffer, signal:ctl.signal});
+    var j = await r.json().catch(function(){ return {}; });
+    return {ok: r.ok, status: r.status, j: j};
+  } finally { clearTimeout(to); }
+}
+// The server's kill switch answers every /api request with 503 {"error":"voice input is disabled"}. No other 503 counts (a busy server, a proxy).
+// Live ends, like on a 403, and one status line says why (requests still in flight find the line already there).
+function isVoiceOff(status, j){ return status === 503 && !!j && j.error === "voice input is disabled"; }
+function voiceOff(){
+  stopLive();
+  if (!statusEl || statusEl.textContent !== t("voiceOff")) setStatus(t("voiceOff"), true);
+}
+
+// ---- push-to-talk recording ----
+var ctx = null, stream = null, node = null, srcNode = null, chunks = [], recording = false, t0 = 0, tick = null, auto = null;
+var inRate = 48000;
+
+function workletCode(){
+  return "class R extends AudioWorkletProcessor{process(i){var c=i[0]&&i[0][0];if(c)this.port.postMessage(c.slice(0));return true}}registerProcessor('rec',R);";
+}
+var starting = false;   // openRec is waiting for the permission prompt or the worklet: a second tap must not open a second microphone
+async function startRec(){
+  if (starting || recording) return;
+  starting = true;
+  try { await openRec(); } finally { starting = false; }
+}
+function releaseRec(){   // whatever an earlier recording left open
+  try { if (node) node.disconnect(); if (srcNode) srcNode.disconnect(); } catch(e){}
+  try { if (stream) stream.getTracks().forEach(function(tr){ tr.stop(); }); } catch(e){}
+  stream = null;
+  try { if (ctx && ctx.state !== "closed") { var cp = ctx.close(); if (cp && cp.catch) cp.catch(function(){}); } } catch(e){}
+}
+async function openRec(){
+  stopAudio(); unlock();
+  releaseRec();   // never two streams: one left open by a failure would keep the microphone busy
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({audio:true});
+  } catch(e){ setStatus(t("noMic"), true); return; }
+  var AC = window.AudioContext || window.webkitAudioContext;
+  ctx = new AC(); inRate = ctx.sampleRate; chunks = [];
+  srcNode = ctx.createMediaStreamSource(stream);
+  var ok = false;
+  if (ctx.audioWorklet) {
+    try {
+      var url = URL.createObjectURL(new Blob([workletCode()], {type:"application/javascript"}));
+      await ctx.audioWorklet.addModule(url);
+      node = new AudioWorkletNode(ctx, "rec");
+      node.port.onmessage = function(e){ if (recording) chunks.push(e.data); };
+      srcNode.connect(node); ok = true;
+    } catch(e){ ok = false; }
+  }
+  if (!ok) {
+    node = ctx.createScriptProcessor(4096, 1, 1);
+    node.onaudioprocess = function(e){ if (recording) chunks.push(new Float32Array(e.inputBuffer.getChannelData(0))); };
+    srcNode.connect(node); node.connect(ctx.destination);
+  }
+  recording = true; t0 = Date.now();
+  recBtn.classList.add("on"); recBtn.textContent = t("recStop");
+  clearStatus();
+  tick = setInterval(function(){
+    var s = Math.floor((Date.now() - t0) / 1000);
+    timerEl.textContent = Math.floor(s/60) + ":" + ("0" + s%60).slice(-2);
+  }, 250);
+  auto = setTimeout(function(){ if (recording) stopRec(); }, 180000);
+}
+function downsample(parts, rate){
+  var n = 0; parts.forEach(function(p){ n += p.length; });
+  var all = new Float32Array(n), o = 0;
+  parts.forEach(function(p){ all.set(p, o); o += p.length; });
+  var ratio = rate / 16000, len = Math.floor(n / ratio), out = new Int16Array(len);
+  for (var i = 0; i < len; i++) {
+    var a = Math.floor(i * ratio), b = Math.min(n, Math.floor((i + 1) * ratio)), s = 0, c = 0;
+    for (var j = a; j < b; j++) { s += all[j]; c++; }
+    var v = c ? s / c : 0; v = Math.max(-1, Math.min(1, v));
+    out[i] = v < 0 ? v * 32768 : v * 32767;
+  }
+  return out;
+}
+async function stopRec(){
+  if (!recording) return;
+  recording = false; clearInterval(tick); clearTimeout(auto);
+  recBtn.classList.remove("on"); recBtn.textContent = t("rec"); timerEl.textContent = "";
+  try { node.disconnect(); srcNode.disconnect(); } catch(e){}
+  try { stream.getTracks().forEach(function(t){ t.stop(); }); } catch(e){}
+  var rate = inRate; try { await ctx.close(); } catch(e){}
+  var pcm = downsample(chunks, rate); chunks = [];
+  if (pcm.length < 8000) { setStatus(t("tooShort")); return; }
+  send(pcm);
+}
+async function send(pcm){
+  recBtn.disabled = true; setStatus(t("recognizing"));
+  try {
+    var r = await postUtterance(pcm);
+    if (isVoiceOff(r.status, r.j)) voiceOff();
+    else if (!r.ok) { setStatus(t("errorPrefix") + (r.j.error || r.status), true); }
+    else if (!r.j.text) { setStatus(t("heardNothing")); }
+    else { clearStatus(); add("msg me", r.j.text); setStatus(t("sent")); }
+  } catch(e){ setStatus(t("netError"), true); }
+  recBtn.disabled = false;
+}
+recBtn.onclick = function(){ unlock(); if (recording) stopRec(); else startRec(); };
+
+// ---- presentation: the liquid orb ----
+// A canvas draws three overlapping blobs (circles perturbed by sine harmonics) in the state's palette, a pre-rendered glow and
+// ripple rings. Every parameter eases toward its per-state target each frame, so a change of state morphs and never jumps.
+// The palette lives in CSS (#app[data-state] --c1..--c3). There is no playback level to follow: while speaking, the shape
+// follows a procedural speech envelope. If the canvas is unusable or motion is reduced, the CSS orb (.halo/.face) takes over.
+var FX_N = 56;                                   // points per blob
+var FX_KEYS = ["amp", "spd", "scl", "glw", "swl", "spr", "dim", "brt", "per"];
+var FX_STATES = {                                // amp wobble, spd phase speed, scl scale, glw glow, swl swirl (rad/s), spr blob spread, dim brightness, brt breathing depth, per breathing period (s)
+  idle:      {amp: .035, spd: .45, scl: 1,   glw: .42, swl: .10, spr: .10, dim: .90, brt: .040, per: 4},
+  paused:    {amp: .020, spd: .22, scl: .97, glw: .20, swl: .05, spr: .07, dim: .50, brt: .025, per: 5.5},
+  loading:   {amp: .050, spd: .70, scl: 1,   glw: .46, swl: .30, spr: .12, dim: .92, brt: .035, per: 2.4},
+  listening: {amp: .045, spd: .80, scl: 1,   glw: .58, swl: .16, spr: .12, dim: 1,   brt: .035, per: 3.4},
+  hearing:   {amp: .060, spd: 1.3, scl: 1,   glw: .82, swl: .34, spr: .16, dim: 1.04, brt: 0,   per: 3},
+  sending:   {amp: .070, spd: 1.5, scl: .98, glw: .72, swl: .70, spr: .12, dim: 1,   brt: 0,    per: 3},
+  thinking:  {amp: .085, spd: 1.6, scl: 1,   glw: .78, swl: 1.25, spr: .30, dim: 1,  brt: 0,    per: 3},
+  speaking:  {amp: .060, spd: 1.25, scl: 1,  glw: .88, swl: .38, spr: .18, dim: 1.04, brt: 0,   per: 3}
+};
+var FX_K = [[2, 3, 4], [3, 4, 5], [2, 4, 5]], FX_W = [[.55, .33, .12], [.5, .32, .18], [.5, .3, .2]];   // each blob: harmonics and their weights
+var FX_V = [[.9, -.7, 1.3], [-.8, 1.1, -.6], [1.2, -.9, .7]], FX_P = [[0, 1.7, 3.1], [2.2, .4, 4], [4.4, 2.6, .9]];   // ...their phase speeds and start phases
+var FX_RAD = [1, .7, .56], FX_TAU = 6.2832;
+var FX_COS = [], FX_SIN = [], FX_TH = [];
+var fx = {
+  level: 0, amb: 0,                              // inputs: the speech level while the user is heard, the damped ambient level while listening (0..1)
+  state: "idle", cv: null, c: null, gc: null, glowCol: null, w: 0, s: 1, raf: 0, last: 0, dead: false, still: false,
+  p: {amp: .035, spd: .45, scl: 1, glw: .42, swl: .1, spr: .1, dim: .9, brt: .04, per: 4},
+  pal: [[100, 116, 139], [148, 163, 184], [51, 65, 85]], col: [[100, 116, 139], [148, 163, 184], [51, 65, 85]],
+  lv: 0, am: 0, avg: 0, env: 0, ph: 0, sw: 0, bp: 0, kick: -1e9, ringAt: 0, rings: [], x: [], y: [],
+  sp: {ph: 0, rate: 4, acc: .7, t: 0, next: 2, pause: 0}
+};
+function fxPalette(){
+  var cs = getComputedStyle(appEl), out = [];
+  for (var i = 1; i <= 3; i++) {
+    var m = /^#([0-9a-f]{6})$/i.exec(cs.getPropertyValue("--c" + i).trim());
+    if (!m) return null;
+    var n = parseInt(m[1], 16); out.push([n >> 16, (n >> 8) & 255, n & 255]);
+  }
+  return out;
+}
+function fxRGBA(c, a, m){ m = m || 1; return "rgba(" + Math.min(255, c[0] * m | 0) + "," + Math.min(255, c[1] * m | 0) + "," + Math.min(255, c[2] * m | 0) + "," + a.toFixed(3) + ")"; }
+function fxMix(a, b, t){ return [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t, a[2] + (b[2] - a[2]) * t]; }
+function fxOn(){ return !!(fx.c && fx.w && !fx.dead && !fx.still && !document.hidden && mode === "live"); }
+function fxWake(){ if (!fx.raf && fxOn()) { fx.last = 0; fx.raf = requestAnimationFrame(fxTick); } }
+function fxFail(e){
+  fx.dead = true; if (fx.raf) cancelAnimationFrame(fx.raf); fx.raf = 0;
+  appEl.classList.add("nofx");
+  try { console.warn("orb renderer off:", e && e.message ? e.message : e); } catch(_){}
+}
+function fxState(s){
+  fx.state = s; fx.pal = fxPalette() || fx.pal;   // called after #app[data-state] changed, so the new palette is in force
+  if (s === "sending") fx.kick = performance.now();   // a quick contraction
+  fxWake();
+}
+function fxRing(t, s){ if (fx.rings.length >= 5) fx.rings.shift(); fx.rings.push({t: t, s: s}); }
+// The assistant's voice has no level we can read, so the deformation follows an invented envelope: syllables at 3-6 Hz with random
+// accents, a slow phrase-level swell and short pauses. Strong accents also send a ripple ring outward.
+function fxSpeech(dt, ts, on){
+  var S = fx.sp, raw = 0;
+  if (on) {
+    S.ph += dt * S.rate * FX_TAU; S.t += dt;
+    if (S.ph >= FX_TAU) {
+      S.ph -= FX_TAU; S.rate = 3 + Math.random() * 3; S.acc = Math.random() < .15 ? .25 : .5 + Math.random() * .5;
+      if (S.acc > .88 && ts - fx.ringAt > 650) { fx.ringAt = ts; fxRing(ts, S.acc); }
+    }
+    S.next -= dt;
+    if (S.next <= 0) { S.pause = .18 + Math.random() * .3; S.next = 1.6 + Math.random() * 2.6; }
+    if (S.pause > 0) S.pause -= dt;
+    raw = (S.pause > 0 ? .06 : 1) * (.62 + .38 * Math.sin(S.t * 2.1 + Math.sin(S.t * .7) * 1.5)) * S.acc * Math.pow(Math.sin(S.ph * .5), .8);
+  }
+  fx.env += (raw - fx.env) * (1 - Math.exp(-dt / (raw > fx.env ? .035 : .1)));
+}
+function fxGlow(){
+  var m = fxMix(fx.col[0], fx.col[1], .4), g = fx.glowCol;
+  if (g && Math.abs(m[0] - g[0]) + Math.abs(m[1] - g[1]) + Math.abs(m[2] - g[2]) < 4) return;
+  fx.glowCol = m;
+  var gx = fx.gc.getContext("2d"), n = fx.gc.width, gr = gx.createRadialGradient(n / 2, n / 2, 0, n / 2, n / 2, n / 2);
+  gr.addColorStop(0, fxRGBA(m, .6)); gr.addColorStop(.5, fxRGBA(m, .55)); gr.addColorStop(.68, fxRGBA(m, .26));
+  gr.addColorStop(.85, fxRGBA(m, .08)); gr.addColorStop(1, fxRGBA(m, 0));
+  gx.clearRect(0, 0, n, n); gx.fillStyle = gr; gx.fillRect(0, 0, n, n);
+}
+function fxFrame(ts){
+  var dt = fx.last ? Math.min(.1, (ts - fx.last) / 1000) : .016;
+  fx.last = ts;
+  var P = fx.p, T = FX_STATES[fx.state] || FX_STATES.idle, k = 1 - Math.exp(-dt / .38), kc = 1 - Math.exp(-dt / .45), i, j, b;
+  for (i = 0; i < FX_KEYS.length; i++) P[FX_KEYS[i]] += (T[FX_KEYS[i]] - P[FX_KEYS[i]]) * k;
+  for (i = 0; i < 3; i++) for (j = 0; j < 3; j++) fx.col[i][j] += (fx.pal[i][j] - fx.col[i][j]) * kc;
+  var hearing = fx.state === "hearing", lvT = hearing ? fx.level : 0, amT = fx.state === "listening" ? fx.amb : 0;
+  fx.lv += (lvT - fx.lv) * (1 - Math.exp(-dt / (lvT > fx.lv ? .05 : .16)));
+  fx.am += (amT - fx.am) * (1 - Math.exp(-dt / .25));
+  fx.ph += dt * P.spd; fx.sw += dt * P.swl; fx.bp += dt / P.per;
+  fxSpeech(dt, ts, fx.state === "speaking");
+  if (hearing) {                                  // a ripple on each peak of the voice
+    fx.avg += (fx.lv - fx.avg) * (1 - Math.exp(-dt / .7));
+    if (fx.lv > .38 && fx.lv > fx.avg + .1 && ts - fx.ringAt > 300) { fx.ringAt = ts; fxRing(ts, fx.lv); }
+  }
+  // ---- draw ----
+  var c = fx.c, W = fx.w, N = FX_N, cx = W / 2, dim = P.dim, xs = fx.x, ys = fx.y;
+  var kk = ts - fx.kick, kick = kk >= 0 && kk < 250 ? 1 - .1 * Math.sin(Math.PI * kk / 250) : 1;
+  var amp = P.amp + fx.lv * .2 + fx.am * .07 + fx.env * .17;
+  var R = W * .29 * P.scl * (1 - P.brt * (.5 - .5 * Math.cos(FX_TAU * fx.bp))) * kick * (1 + fx.lv * .06 + fx.env * .05);
+  c.setTransform(1, 0, 0, 1, 0, 0);
+  c.globalAlpha = 1; c.globalCompositeOperation = "source-over";
+  c.clearRect(0, 0, W, W);
+  c.globalCompositeOperation = "screen";
+  for (b = 0; b < 3; b++) {                        // b = 0 is the body, 1 and 2 are lobes that orbit inside it
+    var a = fx.sw + b * 2.094 + Math.sin(fx.ph * .6 + b * 2) * .5, off = b ? R * (.16 + P.spr * 1.4) : R * P.spr * .3;
+    var bx = cx + Math.cos(a) * off, by = cx + Math.sin(a) * off * .85, rb = R * FX_RAD[b];
+    var K = FX_K[b], Wt = FX_W[b], V = FX_V[b], F = FX_P[b], p0 = F[0] + V[0] * fx.ph, p1 = F[1] + V[1] * fx.ph, p2 = F[2] + V[2] * fx.ph;
+    for (i = 0; i < N; i++) {
+      var th = FX_TH[i], r = rb * (1 + amp * (Wt[0] * Math.sin(K[0] * th + p0) + Wt[1] * Math.sin(K[1] * th + p1) + Wt[2] * Math.sin(K[2] * th + p2)));
+      xs[i] = bx + FX_COS[i] * r; ys[i] = by + FX_SIN[i] * r;
+    }
+    c.beginPath();                                // a smooth closed curve: quadratic segments through the midpoints
+    c.moveTo((xs[N - 1] + xs[0]) / 2, (ys[N - 1] + ys[0]) / 2);
+    for (i = 0; i < N; i++) { j = i + 1 === N ? 0 : i + 1; c.quadraticCurveTo(xs[i], ys[i], (xs[i] + xs[j]) / 2, (ys[i] + ys[j]) / 2); }
+    c.closePath();
+    var col = fx.col[b], g;
+    if (b) {                                      // a lobe: a glowing colour that fades out at its edge (pale colours are held back so the overlap does not burn out)
+      var la = .95 - .4 * (col[0] + col[1] + col[2]) / 765;
+      g = c.createRadialGradient(bx, by, 0, bx, by, rb * 1.1);
+      g.addColorStop(0, fxRGBA(fxMix(col, [255, 255, 255], .2), la, dim)); g.addColorStop(.55, fxRGBA(col, la * .55, dim)); g.addColorStop(1, fxRGBA(col, 0, dim));
+    } else {                                      // the body: lit from the upper left, darker toward the rim
+      g = c.createRadialGradient(bx - rb * .25, by - rb * .32, rb * .05, bx, by, rb * 1.2);
+      g.addColorStop(0, fxRGBA(fxMix(col, [255, 255, 255], .3), 1, dim)); g.addColorStop(.42, fxRGBA(col, 1, dim)); g.addColorStop(1, fxRGBA(col, 1, dim * .55));
+    }
+    c.fillStyle = g; c.fill();
+    if (!b) { c.strokeStyle = fxRGBA(fxMix(col, [255, 255, 255], .5), .3, dim); c.lineWidth = 1.5 * fx.s; c.stroke(); }   // a faint rim light defines the edge
+  }
+  c.globalCompositeOperation = "source-atop";     // depth: a soft highlight on the sphere only
+  var hx = cx - R * .34, hy = cx - R * .42, hr = R * .5, hg = c.createRadialGradient(hx, hy, 0, hx, hy, hr);
+  hg.addColorStop(0, "rgba(255,255,255," + (.3 * Math.min(1, dim)).toFixed(3) + ")"); hg.addColorStop(1, "rgba(255,255,255,0)");
+  c.fillStyle = hg; c.fillRect(hx - hr, hy - hr, hr * 2, hr * 2);
+  var dk = fxMix(fx.col[0], [0, 0, 0], .8);   // a soft shade of the body colour under the glyph keeps it readable on pale colours
+  hg = c.createRadialGradient(cx, cx, 0, cx, cx, R * .55);
+  hg.addColorStop(0, fxRGBA(dk, .3)); hg.addColorStop(.6, fxRGBA(dk, .1)); hg.addColorStop(1, fxRGBA(dk, 0));
+  c.fillStyle = hg; c.fillRect(cx - R * .55, cx - R * .55, R * 1.1, R * 1.1);
+  c.globalCompositeOperation = "destination-over"; // behind the sphere: ripple rings, then the glow
+  var rc = fxMix(fx.col[1], [255, 255, 255], .2), dpr = fx.s;
+  for (i = fx.rings.length - 1; i >= 0; i--) {
+    var rg = fx.rings[i], p = (ts - rg.t) / 1300;
+    if (p >= 1) { fx.rings.splice(i, 1); continue; }
+    c.strokeStyle = fxRGBA(rc, (1 - p) * (1 - p) * rg.s * .6); c.lineWidth = Math.max(1, (2.4 - 1.4 * p) * dpr);
+    c.beginPath(); c.arc(cx, cx, R * (1.05 + .5 * (1 - (1 - p) * (1 - p))), 0, FX_TAU); c.stroke();
+  }
+  fxGlow();
+  c.globalAlpha = Math.min(1, P.glw * (1 + (fx.state === "thinking" ? .28 * Math.sin(ts * .0039) : 0)) * (1 + fx.lv * .5 + fx.env * .35));
+  c.drawImage(fx.gc, 0, 0, W, W);
+  c.globalAlpha = 1; c.globalCompositeOperation = "source-over";
+}
+function fxTick(ts){
+  fx.raf = 0;
+  if (!fxOn()) return;
+  fx.raf = requestAnimationFrame(fxTick);
+  if (ts - fx.last < (fx.state === "idle" || fx.state === "paused" || fx.state === "listening" ? 30 : 14)) return;   // about 30 fps while calm (listening is most of a session), at most 60 otherwise (also on 120 Hz screens)
+  try { fxFrame(ts); } catch(e){ fxFail(e); }
+}
+function fxResize(){
+  var css = orb.offsetWidth * 1.5;
+  if (!css || !fx.c) return;
+  var px = Math.round(css * Math.min(window.devicePixelRatio || 1, 2));   // device pixels, capped at 2x
+  if (fx.cv.width !== px) { fx.cv.width = fx.cv.height = px; fx.w = px; }
+  fx.s = px / css;   // backing pixels per CSS pixel (ring widths)
+  fxWake();
+}
+function fxMotion(){ fx.still = reduced(); appEl.classList.toggle("nofx", fx.dead || fx.still); if (!fx.still) fxWake(); }
+function fxInit(){
+  fx.cv = orb.getElementsByTagName("canvas")[0];
+  try { fx.c = fx.cv.getContext("2d"); fx.gc = document.createElement("canvas"); fx.gc.width = fx.gc.height = 96; } catch(e){ fx.c = null; }
+  for (var i = 0; i < FX_N; i++) { FX_TH[i] = i * FX_TAU / FX_N; FX_COS[i] = Math.cos(FX_TH[i]); FX_SIN[i] = Math.sin(FX_TH[i]); }
+  var pal = fxPalette(); if (pal) { fx.pal = pal; fx.col = [pal[0].slice(), pal[1].slice(), pal[2].slice()]; }
+  if (!fx.c) fxFail("no 2d canvas");
+  fx.still = reduced(); appEl.classList.toggle("nofx", fx.dead || fx.still);
+  if (RM) { if (RM.addEventListener) RM.addEventListener("change", fxMotion); else if (RM.addListener) RM.addListener(fxMotion); }
+  if (window.ResizeObserver) new ResizeObserver(fxResize).observe(orb); else window.addEventListener("resize", fxResize);
+  document.addEventListener("visibilitychange", fxWake);   // the loop stops while the page is hidden
+  fxResize();
+}
+
+// ---- Live mode: UI state ----
+function uiState(){
+  if (!live) return "idle";
+  if (live.loading) return "loading";
+  if (holds.hidden) return "paused";
+  if (playing) return "speaking";
+  if (live.heard) return "hearing";
+  if (uploads > 0) return "sending";
+  if (thinking) return "thinking";
+  return "listening";
+}
+function stateLabel(s){
+  if (s === "loading") return t("loadingVad");
+  if (s === "listening") return t("listening");
+  if (s === "hearing") return t("hearing");
+  if (s === "sending") return t("sending");
+  if (s === "thinking") return t("thinking");
+  if (s === "speaking") return t("speaking");
+  if (s === "paused") return t("paused");
+  return "";
+}
+function render(){
+  var s = uiState();
+  if (orb.getAttribute("data-state") !== s) {
+    orb.setAttribute("data-state", s);
+    appEl.setAttribute("data-state", s);   // palette, aurora tint and status dot follow
+    try { fxState(s); } catch(e){ fxFail(e); }   // decoration must never break the state update
+  }
+  var label = stateLabel(s);
+  if (live && live.basic && label) label += " · " + t("basicTag");
+  if (stateEl.textContent !== label) {
+    stateEl.textContent = label;
+    stateEl.className = stateEl.className === "ca" ? "cb" : "ca";   // restarts the label's entrance
+  }
+  var txt = live ? t("stopLive") : t("startLive");
+  if (liveBtn.textContent !== txt) liveBtn.textContent = txt;
+  liveBtn.className = live ? "on" : "";
+  orb.setAttribute("aria-label", txt);
+  syncTyping();
+}
+var lastLevelAt = 0, levelSmooth = 0;
+function showLevel(L, lvl){
+  var now = Date.now();
+  if (lvl !== 0 && now - lastLevelAt < 40) return;
+  lastLevelAt = now;
+  levelSmooth = lvl === 0 ? 0 : Math.max(lvl, levelSmooth * 0.75);
+  fx.level = L.heard ? levelSmooth : 0;   // the canvas orb follows this; the CSS orb takes it as --lvl
+  if (fx.dead || fx.still) orb.style.setProperty("--lvl", fx.level.toFixed(2));
+}
+function frameRms(f){ var s = 0; for (var i = 0; i < f.length; i++) s += f[i] * f[i]; return Math.sqrt(s / f.length); }
+function levelOf(rms){ return Math.max(0, Math.min(1, (20 * Math.log10(rms + 1e-9) + 50) / 35)); }   // -50 dBFS -> 0, -15 dBFS -> 1
+function armThinking(){
+  thinking = true; clearTimeout(thinkTimer);
+  thinkTimer = setTimeout(function(){ thinking = false; render(); }, THINK_TIMEOUT_MS);
+  render();
+}
+function clearThinking(){ thinking = false; clearTimeout(thinkTimer); }
+
+// A short soft beep when a phrase has been captured and is being sent.
+function beep(L){
+  try {
+    var c = L.ctx; if (c.state !== "running") return;
+    var o = c.createOscillator(), g = c.createGain(), t1 = c.currentTime;
+    o.type = "sine"; o.frequency.value = 880;
+    g.gain.setValueAtTime(0.0001, t1);
+    g.gain.exponentialRampToValueAtTime(0.1, t1 + 0.01);
+    g.gain.exponentialRampToValueAtTime(0.0001, t1 + 0.08);
+    o.connect(g); g.connect(c.destination); o.start(t1); o.stop(t1 + 0.09);
+  } catch(e){}
+}
+
+// ---- Live mode: voice activity detectors. Both report the same events through the handlers H:
+//      frame(rms), start() first sign of speech, speech() real speech (>= MIN_SPEECH_MS), misfire(),
+//      end(Float32Array 16 kHz, forced). forced = the phrase was cut by pause()/cut(), not ended by silence.
+function loadScript(src){
+  return new Promise(function(resolve, reject){
+    var s = document.createElement("script"); s.src = src; s.async = true;
+    s.onload = function(){ resolve(); };
+    s.onerror = function(){ reject(new Error("cannot load " + src)); };
+    document.head.appendChild(s);
+  });
+}
+// Silero VAD through @ricky0123/vad-web. All files come from /vendor/ (see web/vendor.lock).
+var vadScript = null;
+async function createSilero(L, H){
+  if (!vadScript) vadScript = loadScript(VENDOR + "vad.bundle.min.js").catch(function(e){ vadScript = null; throw e; });
+  await vadScript;
+  if (!(window.vad && window.vad.MicVAD)) { vadScript = null; throw new Error("vad-web did not initialize"); }
+  var forced = false, want = false, running = false, cutReq = false, chain = Promise.resolve();
+  var mv = await window.vad.MicVAD.new({
+    model: "v5", baseAssetPath: VENDOR, onnxWASMBasePath: VENDOR, audioContext: L.ctx,
+    getStream: async function(){ return L.stream; },
+    // The microphone stays open while detection is paused: only the processing stops (no new permission prompt).
+    pauseStream: async function(){}, resumeStream: async function(s){ return s; },
+    ortConfig: function(ort){ ort.env.wasm.numThreads = 1; ort.env.logLevel = "error"; },   // no cross-origin isolation, so no threads
+    positiveSpeechThreshold: 0.5, negativeSpeechThreshold: 0.35,
+    redemptionMs: SILENCE_MS[silence], preSpeechPadMs: PRE_PAD_MS, minSpeechMs: MIN_SPEECH_MS,
+    submitUserSpeechOnPause: true, startOnLoad: false,
+    onFrameProcessed: function(p, frame){ H.frame(frameRms(frame)); },
+    onSpeechStart: function(){ H.start(); },
+    onSpeechRealStart: function(){ H.speech(); },
+    onVADMisfire: function(){ H.misfire(); },
+    onSpeechEnd: function(audio){ H.end(audio, forced); }
+  });
+  async function pauseNow(){ forced = true; try { await mv.pause(); } finally { forced = false; } running = false; }
+  // Brings the detector to the wanted state; calls run one after another.
+  async function reconcile(){
+    for (;;) {
+      if (cutReq) { cutReq = false; if (running) await pauseNow(); }   // pausing submits the phrase in progress
+      if (running === want) return;
+      if (want) { await mv.start(); running = true; } else await pauseNow();
+    }
+  }
+  function sync(){ chain = chain.then(reconcile).catch(function(e){ console.warn("vad:", e && e.message); }); return chain; }
+  return {
+    kind: "silero",
+    start: function(){ want = true; return sync().then(function(){ if (!running) throw new Error("the detector did not start"); }); },
+    resume: function(){ want = true; return sync(); },
+    pause: function(){ want = false; return sync(); },
+    cut: function(){ cutReq = true; return sync(); },
+    setRedemption: function(ms){ try { mv.setOptions({redemptionMs: ms}); } catch(e){} },
+    destroy: async function(){
+      want = false; await sync();
+      try { await mv.destroy(); } catch(e){ try { await mv.model.release(); } catch(e2){} }   // never started: only the model is held
+    }
+  };
+}
+
+// Basic detector: frame energy against an adaptive noise floor, with hysteresis and a hangover.
+// Used only when the Silero model cannot be loaded.
+var TAP_CODE = "class T extends AudioWorkletProcessor{constructor(){super();this.b=new Float32Array(1024);this.n=0}" +
+  "process(i){var c=i[0]&&i[0][0];if(c){for(var k=0;k<c.length;k++){this.b[this.n++]=c[k];if(this.n===1024){var o=this.b;this.b=new Float32Array(1024);this.n=0;this.port.postMessage(o,[o.buffer])}}}return true}}registerProcessor('tap',T);";
+async function openTap(c, mediaStream, onChunk){
+  var src = c.createMediaStreamSource(mediaStream), node = null;
+  if (c.audioWorklet && window.AudioWorkletNode) {
+    try {
+      var url = URL.createObjectURL(new Blob([TAP_CODE], {type:"application/javascript"}));
+      await c.audioWorklet.addModule(url);
+      node = new AudioWorkletNode(c, "tap");
+      node.port.onmessage = function(e){ onChunk(e.data); };
+      src.connect(node);
+    } catch(e){ node = null; }
+  }
+  if (!node) {
+    node = c.createScriptProcessor(4096, 1, 1);
+    node.onaudioprocess = function(e){ onChunk(new Float32Array(e.inputBuffer.getChannelData(0))); };
+    src.connect(node); node.connect(c.destination);
+  }
+  return function close(){ try { if (node.port) node.port.onmessage = null; node.onaudioprocess = null; node.disconnect(); src.disconnect(); } catch(e){} };
+}
+async function createEnergy(L, H){
+  var ratio = L.ctx.sampleRate / 16000;
+  var redemptionFrames = Math.floor(SILENCE_MS[silence] / 32), padFrames = Math.floor(PRE_PAD_MS / 32), minFrames = Math.floor(MIN_SPEECH_MS / 32);
+  var paused = true, floor = null, calib = [], smooth = 0;
+  var buf = [], speaking = false, realFired = false, speechFrames = 0, redemption = 0, run = 0;
+  var ph = 0, sum = 0, cnt = 0, fr = new Float32Array(FRAME), fn = 0;
+  function reset(){ buf = []; speaking = false; realFired = false; speechFrames = 0; redemption = 0; run = 0; }
+  function finish(forcedEnd){
+    var frames = buf, was = speaking; reset();
+    if (!was) return;
+    var n = 0; frames.forEach(function(x){ if (x.sp) n++; });
+    if (n < minFrames) { H.misfire(); return; }
+    var out = new Float32Array(frames.length * FRAME);
+    frames.forEach(function(x, i){ out.set(x.f, i * FRAME); });
+    H.end(out, forcedEnd);
+  }
+  function onFrame(f){
+    var rms = frameRms(f);
+    H.frame(rms);
+    if (floor === null) {                                   // calibrate on the first 10 frames (about 0.3 s)
+      calib.push(rms); smooth = rms;
+      if (calib.length >= 10) { calib.sort(function(a, b){ return a - b; }); floor = Math.max(calib[5], 0.0015); }
+      return;
+    }
+    smooth = smooth * 0.5 + rms * 0.5;
+    var on = Math.max(floor * 4, 0.01), off = Math.max(floor * 2.2, 0.005);   // 4x / 2.2x the noise floor, never below -40 / -46 dBFS
+    var isSpeech = rms >= (speaking ? off : on);
+    // noise floor: follows quiet frames down at once, creeps up slowly while nobody is speaking
+    if (smooth < floor) floor = Math.max(0.0008, floor * 0.7 + smooth * 0.3);
+    else if (!speaking && !isSpeech) floor = Math.min(0.05, floor + (smooth - floor) * 0.01);
+    buf.push({f: f, sp: isSpeech});
+    run = isSpeech ? run + 1 : 0;
+    if (isSpeech) { speechFrames++; redemption = 0; }
+    if (!speaking && run >= 2) { speaking = true; H.start(); }
+    if (speaking && !realFired && speechFrames >= minFrames) { realFired = true; H.speech(); }
+    if (speaking && !isSpeech && ++redemption >= redemptionFrames) finish(false);
+    if (!speaking) { while (buf.length > padFrames) buf.shift(); speechFrames = 0; }
+  }
+  function onChunk(c){
+    if (paused) return;
+    for (var i = 0; i < c.length; i++) {
+      sum += c[i]; cnt++; ph += 1;
+      if (ph >= ratio) {
+        ph -= ratio; fr[fn++] = sum / cnt; sum = 0; cnt = 0;
+        if (fn === FRAME) { var f = fr; fr = new Float32Array(FRAME); fn = 0; onFrame(f); }
+      }
+    }
+  }
+  var close = await openTap(L.ctx, L.stream, onChunk);
+  return {
+    kind: "energy",
+    start: async function(){ paused = false; },
+    resume: async function(){ paused = false; },
+    pause: async function(){ if (!paused) { paused = true; finish(true); } },
+    cut: async function(){ finish(true); },
+    setRedemption: function(ms){ redemptionFrames = Math.floor(ms / 32); },
+    destroy: async function(){ paused = true; close(); }
+  };
+}
+
+// ---- Live mode: session ----
+function makeHandlers(L){
+  function over(){ return live !== L; }
+  function endHeard(){ clearTimeout(L.capTimer); L.heard = false; showLevel(L, 0); render(); next(); }
+  return {
+    frame: function(rms){
+      L.lastFrame = Date.now();
+      var lv = levelOf(rms); if (!(lv >= 0)) lv = 0;   // a NaN would stick in the damped level
+      if (L.heard) showLevel(L, lv);
+      fx.amb += (lv - fx.amb) * 0.12;   // damped ambient level: the orb sways with the room while listening
+    },
+    start: function(){
+      if (over()) return;
+      clearTimeout(L.capTimer);
+      L.capTimer = setTimeout(function(){ if (!over() && L.det) L.det.cut(); }, MAX_PHRASE_MS - PRE_PAD_MS);
+    },
+    speech: function(){ if (over()) return; L.heard = true; render(); },
+    misfire: function(){ if (over()) return; endHeard(); },
+    end: function(audio, forced){
+      if (over()) return;
+      if (L.dropEnd) { console.log("phrase dropped: the page went to the background before it ended"); endHeard(); return; }   // see setHold
+      var trim = forced ? 0 : Math.max(0, Math.floor(L.redemptionMs / 32) * FRAME - KEEP_TAIL_MS * 16);   // keep a short tail of the pause
+      var n = Math.max(0, audio.length - trim), pcm = new Int16Array(n);
+      for (var i = 0; i < n; i++) { var v = audio[i]; v = v < -1 ? -1 : v > 1 ? 1 : v; pcm[i] = v < 0 ? v * 32768 : v * 32767; }
+      beep(L); haptic("impact", "light");
+      enqueueUpload(pcm);
+      endHeard();
+    }
+  };
+}
+var upChain = Promise.resolve();
+// Phrases are sent one after another, so they reach Claude in the order they were spoken.
+function enqueueUpload(pcm){
+  uploads++; render();
+  upChain = upChain.then(function(){ return uploadPhrase(pcm); }).catch(function(){}).then(function(){ uploads--; render(); });
+}
+async function uploadPhrase(pcm){
+  try {
+    var r = await postUtterance(pcm);
+    if (isVoiceOff(r.status, r.j)) voiceOff();
+    else if (!r.ok) { setStatus(t("errorPrefix") + (r.j.error || r.status), true); if (r.status === 403) stopLive(); }   // 429 (rate limit) stays an error line, Live goes on
+    else if (!r.j.text) { setStatus(t("heardNothing")); }
+    else { clearStatus(); add("msg me", r.j.text); armThinking(); }
+  } catch(e){ setStatus(t("netError"), true); }
+}
+function setHold(reason, on){
+  if (on) holds[reason] = true; else delete holds[reason];
+  var L = live;
+  if (L && L.det) {
+    if (Object.keys(holds).length) {
+      // Pausing hands over a phrase in progress. When the page went away (hidden or deactivated) that phrase is unfinished: the
+      // flag makes the end handler drop it instead of sending it. Other pauses (reply audio, the 60 s cut) still send it.
+      var drop = reason === "hidden" && on, p;
+      if (drop) L.dropEnd = true;
+      p = L.det.pause();
+      if (drop) Promise.resolve(p).then(function(){ L.dropEnd = false; }, function(){ L.dropEnd = false; });
+    } else L.det.resume();
+  }
+  render();
+}
+
+function tgCall(name){ try { if (tg && typeof tg[name] === "function") tg[name](); } catch(e){} }
+async function acquireWake(L){
+  try {
+    if (live !== L || L.wake || !navigator.wakeLock) return;
+    var w = await navigator.wakeLock.request("screen");
+    if (live !== L) { try { w.release(); } catch(e){} return; }
+    L.wake = w;
+    w.addEventListener("release", function(){ if (L.wake === w) L.wake = null; });
+  } catch(e){ L.wake = null; }
+}
+// The page is away when the document is hidden (the Mini App is in the background, the screen is off) or Telegram says it is deactivated
+// (Bot API 8.0 events); either one is enough, so the two sources never fight. While it is away the detector is paused.
+var tgInactive = false;
+function syncHidden(){
+  var L = live; if (!L) return;
+  if (document.hidden || tgInactive) {
+    if (!L.hiddenSince) L.hiddenSince = Date.now();
+    setHold("hidden", true);
+    return;
+  }
+  // Back. The timers of a frozen page do not run, so the time spent away is checked here as well.
+  if (HIDDEN_STOP_MS && L.hiddenSince && Date.now() - L.hiddenSince >= HIDDEN_STOP_MS) { endLive(t("hiddenStopped"), false); return; }
+  L.hiddenSince = 0;
+  try { var p = L.ctx.resume(); if (p && p.catch) p.catch(function(){}); } catch(e){}
+  acquireWake(L);
+  setHold("hidden", false);
+}
+document.addEventListener("visibilitychange", syncHidden);
+try {
+  if (tg && tg.onEvent && tg.isVersionAtLeast("8.0")) {
+    tg.onEvent("deactivated", function(){ tgInactive = true; syncHidden(); });
+    tg.onEvent("activated", function(){ tgInactive = false; syncHidden(); });
+  }
+} catch(e){}
+
+// ---- Live mode: presence. Live must not run on with nobody there (a phone left in a pocket, a TV talking in the room), so it ends
+//      by itself: after LIVE_IDLE_MS without a touch or click (speech does not count), and after HIDDEN_STOP_MS spent away. ----
+var idleEl = $("idle");
+function showIdle(secs){   // the countdown over the log; 0 hides it
+  if (secs > 0) {
+    var s = t("idleWarn").replace("{n}", String(secs));
+    if (idleEl.textContent !== s) idleEl.textContent = s;
+    idleEl.classList.add("on");
+  } else if (idleEl.classList.contains("on")) { idleEl.classList.remove("on"); idleEl.textContent = ""; }
+}
+function idleOver(L){ return !!LIVE_IDLE_MS && Date.now() - L.touched >= LIVE_IDLE_MS; }
+function presenceTick(){   // once a second while Live runs, and on every touch
+  var L = live; if (!L) return;
+  var now = Date.now();
+  // Away for too long: stop at once, even in the middle of a reply (nobody is looking).
+  if (HIDDEN_STOP_MS && L.hiddenSince && now - L.hiddenSince >= HIDDEN_STOP_MS) { endLive(t("hiddenStopped"), false); return; }
+  var left = LIVE_IDLE_MS ? L.touched + LIVE_IDLE_MS - now : Infinity;
+  if (left <= 0) {
+    // Out of time while a reply is spoken (or waits for the user to finish): it is not cut short. playEnded() stops Live after the last clip,
+    // and a touch before that cancels the stop.
+    if (playing || queue.length) showIdle(0); else endLive(t("idleStopped"), true);
+    return;
+  }
+  showIdle(left <= IDLE_WARN_MS ? Math.ceil(left / 1000) : 0);
+}
+// Live ends by itself: the microphone is released and a line in the log says why.
+function endLive(why, buzz){
+  if (!live) return;
+  stopLive(); add("st", why);
+  if (buzz) haptic("impact", "light");
+}
+// A touch or click anywhere on the page counts as presence (a screen reader sends a click without a pointer event, hence both). It also proves
+// that the app is active: a "deactivated" that is never followed by "activated" must not leave the page paused, and stopping, for good.
+function touched(){
+  if (tgInactive) { tgInactive = false; syncHidden(); }
+  var L = live; if (L) { L.touched = Date.now(); presenceTick(); }
+}
+document.addEventListener("pointerdown", touched, true);
+document.addEventListener("click", touched, true);
+
+async function fallbackToBasic(L, why){
+  if (live !== L || L.basic) return;
+  console.warn("falling back to the basic voice detector:", why);
+  var old = L.det; L.det = null; L.basic = true;
+  if (old) { try { await old.destroy(); } catch(e){} }
+  if (live !== L) return;
+  try { L.det = await createEnergy(L, L.H); } catch(e){ stopLive(); setStatus(t("liveError"), true); return; }
+  if (live !== L) { L.det.destroy(); return; }
+  add("st", t("basicNote"));
+  L.lastFrame = Date.now();
+  if (Object.keys(holds).length) await L.det.pause(); else await L.det.start();
+  render();
+}
+// Rejects after ms; a detector that arrives too late is destroyed.
+function withTimeout(p, ms){
+  return new Promise(function(resolve, reject){
+    var late = false, to = setTimeout(function(){ late = true; reject(new Error("timeout")); }, ms);
+    p.then(function(v){ clearTimeout(to); if (late) { try { v.destroy(); } catch(e){} } else resolve(v); },
+           function(e){ clearTimeout(to); if (!late) reject(e); });
+  });
+}
+
+async function startLive(){
+  if (live) return;
+  stopAudio(); unlock(); clearStatus();
+  var AC = window.AudioContext || window.webkitAudioContext;
+  if (!AC || !navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) { setStatus(t("liveError"), true); return; }
+  var L = live = {id: ++liveSeq, loading: true, heard: false, basic: false, ctx: new AC(), stream: null, det: null, H: null,
+                  wake: null, capTimer: null, watch: null, lastFrame: 0, redemptionMs: SILENCE_MS[silence],
+                  touched: Date.now(), hiddenSince: 0, dropEnd: false, pres: null};
+  L.H = makeHandlers(L);
+  L.pres = setInterval(presenceTick, 1000);
+  try { var rp = L.ctx.resume(); if (rp && rp.catch) rp.catch(function(){}); } catch(e){}
+  holds = {};
+  tgCall("disableVerticalSwipes"); tgCall("enableClosingConfirmation");
+  acquireWake(L);
+  render();
+  // Fetching the model and opening the microphone run in parallel.
+  var vadP = withTimeout(createSilero(L, L.H), VAD_LOAD_TIMEOUT_MS);
+  vadP.catch(function(){});
+  function discard(){ vadP.then(function(d){ d.destroy(); }, function(){}); }   // Live ended before the detector was needed
+  try {
+    L.stream = await navigator.mediaDevices.getUserMedia({audio:{channelCount:1, echoCancellation:true, noiseSuppression:true, autoGainControl:true}});
+  } catch(e){
+    discard();
+    if (live === L) { stopLive(); setStatus(t("noMic"), true); }
+    return;
+  }
+  if (live !== L) { L.stream.getTracks().forEach(function(tr){ tr.stop(); }); discard(); return; }
+  L.stream.getAudioTracks().forEach(function(tr){ tr.onended = function(){ if (live === L) { stopLive(); setStatus(t("noMic"), true); } }; });
+  var det = null;
+  try { det = await vadP; } catch(e){ console.warn("Silero VAD is unavailable:", e && e.message); }
+  if (live !== L) { if (det) det.destroy(); return; }
+  if (det) L.det = det;
+  else {
+    L.basic = true;
+    try { L.det = await createEnergy(L, L.H); } catch(e){ stopLive(); setStatus(t("liveError"), true); return; }
+    if (live !== L) { L.det.destroy(); return; }
+    add("st", t("basicNote"));
+  }
+  L.lastFrame = Date.now();
+  try {
+    if (Object.keys(holds).length) await L.det.pause(); else await L.det.start();
+  } catch(e){ await fallbackToBasic(L, "the detector did not start"); }
+  if (live !== L) return;
+  L.loading = false;
+  L.lastFrame = Date.now();
+  // If the Silero detector silently stops delivering frames, switch to the basic one.
+  L.watch = setInterval(function(){
+    if (live !== L || L.basic || L.loading || Object.keys(holds).length || L.ctx.state !== "running") { L.lastFrame = Date.now(); return; }
+    if (Date.now() - L.lastFrame > 5000) fallbackToBasic(L, "no audio frames");
+  }, 1000);
+  render();
+}
+function stopLive(){
+  var L = live; if (!L) return;
+  live = null; holds = {};
+  stopAudio();
+  clearTimeout(L.capTimer); clearInterval(L.watch); clearInterval(L.pres); clearTimeout(resumeTimer); resumeTimer = null;
+  showIdle(0);
+  showLevel(L, 0);
+  tgCall("enableVerticalSwipes"); tgCall("disableClosingConfirmation");
+  try { if (L.wake) L.wake.release(); } catch(e){}
+  L.wake = null;
+  render();
+  (async function(){
+    try { if (L.det) await L.det.destroy(); } catch(e){}
+    try { if (L.stream) L.stream.getTracks().forEach(function(tr){ tr.stop(); }); } catch(e){}
+    try { await L.ctx.close(); } catch(e){}
+  })();
+}
+liveBtn.onclick = function(){ unlock(); haptic("impact", "medium"); if (live) stopLive(); else startLive(); };
+// Tapping the big indicator interrupts reply audio (and starts a conversation when none is running).
+orb.onclick = function(){ if (cfCard) return; unlock(); if (!live) { haptic("impact", "medium"); startLive(); } else if (playing) stopAudio(); };
+
+// ---- mode and pause settings ----
+// The thumb of a segmented control sits under its pressed button. The buttons differ in width, so the place is measured.
+function moveThumb(seg){
+  var b = seg.querySelector("[aria-pressed=true]");
+  if (!b || !b.offsetWidth) return;   // hidden (display:none): placed when it is shown again
+  seg.style.setProperty("--tx", b.offsetLeft + "px"); seg.style.setProperty("--tw", b.offsetWidth + "px");
+  if (!seg.classList.contains("rd")) requestAnimationFrame(function(){ seg.classList.add("rd"); });   // slide only after the first placement
+}
+function moveThumbs(){ Array.prototype.forEach.call(document.querySelectorAll(".seg"), moveThumb); }
+window.addEventListener("resize", moveThumbs);
+if (document.fonts && document.fonts.ready) document.fonts.ready.then(moveThumbs);
+function setMode(m){
+  mode = m; lsSet("mode", m);
+  if (m === "ptt" && live) stopLive();
+  if (m === "live" && recording) stopRec();
+  appEl.setAttribute("data-mode", m);
+  Array.prototype.forEach.call(document.querySelectorAll("#modes button"), function(b){ b.setAttribute("aria-pressed", b.getAttribute("data-mode") === m ? "true" : "false"); });
+  moveThumbs(); fxWake();
+}
+Array.prototype.forEach.call(document.querySelectorAll("#modes button"), function(b){ b.onclick = function(){ var m = b.getAttribute("data-mode"); if (m !== mode) haptic("select"); setMode(m); }; });
+try { fxInit(); } catch(e){ fxFail(e); }
+setMode(mode);
+function setSilence(k){
+  silence = k; lsSet("silence", k);
+  Array.prototype.forEach.call(document.querySelectorAll("#silopts button"), function(b){ b.setAttribute("aria-pressed", b.getAttribute("data-sil") === k ? "true" : "false"); });
+  if (live) { live.redemptionMs = SILENCE_MS[k]; if (live.det) live.det.setRedemption(SILENCE_MS[k]); }
+  moveThumbs();
+}
+Array.prototype.forEach.call(document.querySelectorAll("#silopts button"), function(b){ b.onclick = function(){ var k = b.getAttribute("data-sil"); if (k !== silence) haptic("select"); setSilence(k); }; });
+setSilence(silence);
+render();
+
+// ---- confirmation cards (voice_confirm) ----
+// The server sends {type:"confirm", confirm_id, action, expires_in}. One card at a time (the rest wait); the action text is set with
+// textContent only. The buttons are disabled for the first CONFIRM_ARM_MS so a stray tap cannot answer. The tap goes to api/confirm,
+// which needs a login that is not too old: a 403 "stale login" removes the card and says to reopen the app.
+var CONFIRM_ARM_MS = 1000;
+var cfEl = $("confirm"), cfYes = $("cf-yes"), cfNo = $("cf-no");
+var cfQueue = [], cfCard = null, cfTick = null, cfArm = null, cfBusy = false;
+function cfLeft(){ return Math.max(0, Math.ceil((cfCard.until - Date.now()) / 1000)); }
+function cfPaint(){
+  if (!cfCard) return;
+  var n = cfLeft();
+  $("cf-time").textContent = t("confirmLeft").replace("{n}", String(n));
+  if (n <= 0) cfClose();
+}
+function cfShow(){
+  if (cfCard || !cfQueue.length) return;
+  cfCard = cfQueue.shift(); cfBusy = false;
+  $("cf-action").textContent = cfCard.action;
+  cfYes.disabled = cfNo.disabled = true;
+  cfEl.classList.add("on");
+  cfPaint();
+  cfTick = setInterval(cfPaint, 250);
+  cfArm = setTimeout(function(){ cfArm = null; if (cfCard && !cfBusy) cfYes.disabled = cfNo.disabled = false; }, CONFIRM_ARM_MS);
+  haptic("notify", "warning");
+}
+function cfClose(){
+  clearInterval(cfTick); clearTimeout(cfArm); cfTick = cfArm = null;
+  cfCard = null; cfBusy = false;
+  cfEl.classList.remove("on"); cfYes.disabled = cfNo.disabled = true;
+  $("cf-action").textContent = "";
+  cfShow();
+}
+function cfIncoming(ev){
+  var id = ev.confirm_id, secs = ev.expires_in;
+  if (typeof id !== "string" || !/^[0-9a-f]{32}$/.test(id) || typeof ev.action !== "string" || typeof secs !== "number" || !(secs > 0 && secs <= 300)) return;
+  cfQueue.push({id: id, action: ev.action.slice(0, 400), until: Date.now() + secs * 1000});
+  cfShow();
+}
+async function cfAnswer(decision){
+  var c = cfCard;
+  if (!c || cfBusy || cfYes.disabled) return;
+  cfBusy = true; cfYes.disabled = cfNo.disabled = true;
+  haptic("impact", "medium");
+  try {
+    var r = await fetch("api/confirm", {method:"POST", headers:{"X-Init-Data":initData, "Content-Type":"application/json"}, body:JSON.stringify({id:c.id, decision:decision})});
+    var j = await r.json().catch(function(){ return {}; });
+    if (cfCard !== c) return;
+    if (r.ok) { haptic("notify", decision === "confirm" ? "success" : "warning"); cfClose(); return; }
+    if (r.status === 403 && j.error === "stale login") { cfClose(); setStatus(t("confirmStale"), true); return; }
+    if (isVoiceOff(r.status, j)) { cfClose(); voiceOff(); return; }
+    if (r.status === 404 || r.status === 409 || r.status === 410) { cfClose(); setStatus(t("confirmGone"), true); return; }
+    throw new Error("status " + r.status);
+  } catch(e){
+    if (cfCard !== c) return;
+    cfBusy = false; cfYes.disabled = cfNo.disabled = false;   // a failed request may be tried again while the card lives
+    setStatus(t("netError"), true);
+  }
+}
+cfYes.onclick = function(){ cfAnswer("confirm"); };
+cfNo.onclick = function(){ cfAnswer("decline"); };
+
+// ---- events long-poll ----
+var after = -1;
+async function poll(){
+  for (;;) {
+    try {
+      var r = await fetch("api/events?after=" + after, {headers:{"X-Init-Data":initData}});
+      if (!r.ok) {
+        var off = isVoiceOff(r.status, await r.json().catch(function(){ return {}; }));
+        if (off) voiceOff();
+        await sleep(off || r.status === 403 ? 15000 : 3000);
+        continue;
+      }
+      var j = await r.json();
+      if (j.last !== undefined && (after < 0 || after > j.last)) after = j.last;
+      (j.events || []).forEach(function(ev){
+        if (ev.id > after) after = ev.id;
+        if (ev.type === "ack") { if (live) armThinking(); else { setStatus(t("ack")); setWaiting(true); } }
+        else if (ev.type === "confirm") cfIncoming(ev);
+        else if (ev.type === "progress") progShow(String(ev.kind));
+        else if (ev.type === "reply") {
+          clearStatus(); clearThinking(); setWaiting(false); add("msg cl", ev.text); haptic("impact", "soft");
+          // The audio is played only from the form the server hands out (/a/<uuid>.wav|mp3 on this origin); anything else is ignored, the text stays.
+          var au = ev.audio_url;
+          if (au && !(typeof au === "string" && AUDIO_URL.test(au))) { console.warn("reply audio ignored: not a stored clip"); au = null; }
+          if (au && speakEl.checked) { queue.push(au); next(); }
+          render();
+        }
+      });
+    } catch(e){ await sleep(3000); }
+  }
+}
+function sleep(ms){ return new Promise(function(r){ setTimeout(r, ms); }); }
+poll();
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,56 @@
+[Unit]
+Description=VoiceChannel auth watchdog (reports an authentication error in the main Claude Code session)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/opt/voice/session/auth_watch.sh
+Nice=10
+TimeoutStartSec=60
+
+# ---- identity: root, because the main session's tmux socket belongs to root (/tmp/tmux-<uid>); it reads the
+# voice env file, the Telegram plugin .env (bot token, chat id) and the session transcript under
+# ~/.claude/projects (read-only: ProtectHome=read-only is enough) and writes its state only.
+# Environment=VOICE_DIR is replaced by deploy.sh with the instance's real directory.
+Environment=VOICE_DIR=/root/.voice
+UMask=0077
+StateDirectory=voice-auth-watch
+StateDirectoryMode=0700
+
+# ---- filesystem and kernel surface (PrivateTmp must stay off: the tmux socket lives in /tmp)
+ProtectSystem=strict
+ProtectHome=read-only
+PrivateTmp=no
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+
+# ---- privileges and syscalls (the files it reads belong to root, so no capability is needed)
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+RestrictSUIDSGID=yes
+RestrictNamespaces=yes
+RestrictRealtime=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+RemoveIPC=yes
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged @resources
+SystemCallErrorNumber=EPERM
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+
+# ---- network: the Telegram API only; docker/VPN/LAN ranges are closed
+IPAddressDeny=10.0.0.0/8 172.16.0.0/12 192.168.0.0/16 169.254.0.0/16 100.64.0.0/10 fc00::/7 fe80::/10
+
+# ---- resource caps
+MemoryMax=128M
+TasksMax=64
+LimitNOFILE=1024
+LimitCORE=0

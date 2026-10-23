@@ -1,0 +1,73 @@
+[Unit]
+Description=VoiceChannel Cloudflare quick tunnel
+After=network-online.target voice-web.service
+Wants=network-online.target voice-web.service
+
+[Service]
+Type=simple
+ExecStart=/opt/voice/tunnel/run_tunnel.sh
+Restart=always
+RestartSec=5
+Nice=5
+
+# ---- identity: its own throw-away uid. It needs the port, the chat id and the bot token only to set the menu button;
+# they arrive as credentials (copied when the unit starts). The credential called env is NOT the instance's env file but
+# tunnel.env, a reduced copy that deploy.sh writes on every run (VOICE_PORT, the chat and the menu text, and the bot token
+# if it is set there): cloudflared and the script around it can never read the API keys. deploy.sh replaces /root/.voice
+# and the Telegram plugin path below with the instance's real ones.
+DynamicUser=yes
+UMask=0077
+RuntimeDirectory=voice-tunnel
+RuntimeDirectoryMode=0700
+LoadCredential=env:/root/.voice/tunnel.env
+LoadCredential=telegram.env:/root/.claude/channels/telegram/.env
+Environment=VOICE_DIR=%t/voice-tunnel
+Environment=VOICE_ENV_FILE=%d/env
+Environment=VOICE_TG_ENV_FILE=%d/telegram.env
+Environment=HOME=%t/voice-tunnel
+# The URL file lives in the runtime directory (/run/voice-tunnel/url, mode 0600). This link, made outside the
+# sandbox as root, keeps /root/.voice/url working for people and scripts; if it cannot be made, the tunnel still runs.
+ExecStartPost=-+/bin/ln -sfn %t/voice-tunnel/url /root/.voice/url
+
+# ---- filesystem and kernel surface
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectProc=invisible
+ProcSubset=pid
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+
+# ---- privileges and syscalls
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+RestrictSUIDSGID=yes
+RestrictNamespaces=yes
+RestrictRealtime=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+RemoveIPC=yes
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged @resources
+# a filtered syscall fails with EPERM instead of killing the service with SIGSYS
+SystemCallErrorNumber=EPERM
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+
+# ---- network: loopback (voice-web) and the internet (Cloudflare, Telegram); docker/VPN/LAN ranges are closed
+IPAddressDeny=10.0.0.0/8 172.16.0.0/12 192.168.0.0/16 169.254.0.0/16 100.64.0.0/10 fc00::/7 fe80::/10
+
+# ---- resource caps
+MemoryMax=256M
+TasksMax=256
+LimitNOFILE=4096
+LimitCORE=0
+
+[Install]
+WantedBy=multi-user.target

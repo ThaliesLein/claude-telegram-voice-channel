@@ -1,0 +1,73 @@
+[Unit]
+Description=VoiceChannel web backend
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# -I: ignore PYTHON* variables and the user site; -B: no .pyc files (the code directory is read-only)
+ExecStart=/usr/bin/python3 -I -B /opt/voice/web/server.py
+Restart=always
+RestartSec=3
+Nice=5
+
+# ---- identity: a throw-away unprivileged uid. The secrets are handed over as credentials: systemd copies them when
+# the unit starts (so a change needs a restart) and only this uid can read the copies. deploy.sh replaces
+# /root/.voice and the Telegram plugin path below with the instance's real ones.
+DynamicUser=yes
+UMask=0077
+StateDirectory=voice
+StateDirectoryMode=0700
+LoadCredential=env:/root/.voice/env
+LoadCredential=internal_token:/root/.voice/internal_token
+LoadCredential=glossary.txt:/root/.voice/glossary.txt
+LoadCredential=telegram.env:/root/.claude/channels/telegram/.env
+Environment=VOICE_ENV_FILE=%d/env
+Environment=VOICE_TOKEN_FILE=%d/internal_token
+Environment=VOICE_GLOSSARY_FILE=%d/glossary.txt
+Environment=VOICE_TG_ENV_FILE=%d/telegram.env
+# /var/lib/voice (physically /var/lib/private/voice): inbox.jsonl, last_id, audio/ and the kill switch file DISABLED
+Environment=VOICE_STATE_DIR=%S/voice
+
+# ---- filesystem and kernel surface
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectProc=invisible
+ProcSubset=pid
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+
+# ---- privileges and syscalls
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+RestrictSUIDSGID=yes
+RestrictNamespaces=yes
+RestrictRealtime=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+RemoveIPC=yes
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged @resources
+# a filtered syscall fails with EPERM instead of killing the service with SIGSYS
+SystemCallErrorNumber=EPERM
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+
+# ---- network: loopback and the internet stay open; docker/VPN/LAN ranges are closed
+IPAddressDeny=10.0.0.0/8 172.16.0.0/12 192.168.0.0/16 169.254.0.0/16 100.64.0.0/10 fc00::/7 fe80::/10
+
+# ---- resource caps (the code has its own limits too)
+MemoryMax=768M
+TasksMax=512
+LimitNOFILE=4096
+LimitCORE=0
+
+[Install]
+WantedBy=multi-user.target
