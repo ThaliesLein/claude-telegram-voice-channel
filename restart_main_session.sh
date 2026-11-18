@@ -5,6 +5,10 @@
 #   bash restart_main_session.sh --no-voice   # resume it without the voice channel (also the right
 #                                             # call for a reboot hook: the development-channel
 #                                             # prompt below needs a human)
+#   bash restart_main_session.sh --new [--no-voice]
+#                                             # start a NEW session under CLAUDE_SESSION_ID (a UUID that has no
+#                                             # transcript yet), for example when the old transcript grew too
+#                                             # large; later restarts resume it without --new
 #
 # After a start with voice: `tmux attach -t <tmux session>`, confirm the development-channel prompt
 # if one is shown, then detach with Ctrl-b d.
@@ -134,6 +138,16 @@ wait_voice() {
 
 [ -z "${RESTART_LIB_ONLY:-}" ] || return 0
 
+VOICE=1
+NEW=0
+for arg in "$@"; do
+  case "$arg" in
+    --no-voice) VOICE=0 ;;
+    --new) NEW=1 ;;
+    *) echo "usage: restart_main_session.sh [--new] [--no-voice]" >&2; exit 2 ;;
+  esac
+done
+
 SESSION_ID=$(conf CLAUDE_SESSION_ID "")
 if [ -z "$SESSION_ID" ]; then
   echo "CLAUDE_SESSION_ID is not set: export it, or add a CLAUDE_SESSION_ID= line to $VOICE_DIR/env" >&2
@@ -153,10 +167,18 @@ TELEGRAM_ENV_FILE=$(conf TELEGRAM_ENV_FILE "$HOME/.claude/channels/telegram/.env
 # non-alphanumeric character replaced by "-">/<session id>.jsonl, e.g. -root for /root.
 PROJECT_DIR=$(printf '%s' "$WORKDIR" | sed 's/[^A-Za-z0-9]/-/g')
 TRANSCRIPT="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/projects/$PROJECT_DIR/${SESSION_ID}.jsonl"
-[ -f "$TRANSCRIPT" ] || { echo "transcript not found: $TRANSCRIPT" >&2; exit 1; }
+if [ "$NEW" = 1 ]; then
+  # a new session: Claude Code takes the id with --session-id, which must be a UUID; refuse an id that already has a transcript
+  [[ "$SESSION_ID" =~ ^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$ ]] || { echo "--new needs CLAUDE_SESSION_ID to be a lower-case UUID" >&2; exit 1; }
+  [ ! -e "$TRANSCRIPT" ] || { echo "--new refused: a transcript for this id already exists: $TRANSCRIPT (resume it without --new)" >&2; exit 1; }
+  SESSION_ARG="--session-id $SESSION_ID"
+else
+  [ -f "$TRANSCRIPT" ] || { echo "transcript not found: $TRANSCRIPT (to start a new session under this id, add --new)" >&2; exit 1; }
+  SESSION_ARG="--resume $SESSION_ID"
+fi
 
-CMD="$(printf '%q' "$CLAUDE_BIN") --resume $SESSION_ID --channels $CHANNELS"
-if [ "${1:-}" != "--no-voice" ]; then
+CMD="$(printf '%q' "$CLAUDE_BIN") $SESSION_ARG --channels $CHANNELS"
+if [ "$VOICE" = 1 ]; then
   [ -f "$VOICE_DIR/mcp.json" ] || { echo "$VOICE_DIR/mcp.json missing (run deploy.sh)" >&2; exit 1; }
   systemctl is-active --quiet voice-web || { echo "voice-web is not running" >&2; exit 1; }
   CMD="$CMD --mcp-config $(printf '%q' "$VOICE_DIR/mcp.json") --dangerously-load-development-channels server:voice"
@@ -201,7 +223,7 @@ fi
 echo "telegram plugin: $VERDICT"
 FAILED=""
 case "$VERDICT" in OK*|"check skipped"*) ;; *) FAILED="telegram plugin" ;; esac
-if [ "${1:-}" != "--no-voice" ]; then
+if [ "$VOICE" = 1 ]; then
   wait_voice "$PANE_PID" "$VOICE_DIR/mcp.json" || FAILED="${FAILED:+$FAILED and }voice channel"
 fi
 echo "now: tmux attach -t $TMUX_SESSION   (confirm prompts, then Ctrl-b d)"

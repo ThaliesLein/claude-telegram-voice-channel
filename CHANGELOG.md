@@ -1,5 +1,17 @@
 # Changelog
 
+## 1.1.1 (2026-11-18)
+
+A fix for recent Claude Code versions and a way to start over when a session has grown too large.
+
+### New
+
+- **Start a fresh session under the same setup.** `restart_main_session.sh --new` starts a new Claude Code session under `CLAUDE_SESSION_ID` (a UUID that has no transcript yet) instead of resuming one. Use it when a transcript has grown too large to resume; later restarts resume the new session as usual.
+
+### Fixed
+
+- **Voice gender lost on recent Claude Code versions.** Newer versions cut the end of an MCP server's instructions (at 4096 characters), which could drop the last rules, including the voice gender. The instructions are now shorter and the gender line comes first.
+
 ## 1.1.0 (2026-10-23)
 
 This release makes a voice conversation feel faster and puts you back in control while Claude is working.

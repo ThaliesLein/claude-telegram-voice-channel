@@ -142,9 +142,9 @@ try:
     tg_env = os.path.join(tmp, "tg.env")
     write(tg_env, "# no token\n", 0o600)
 
-    def full(claude, *args):
+    def full(claude, *args, session=sid):
         tmux("kill-server")
-        env = {**BASE_ENV, "PATH": stubs + ":" + os.environ["PATH"], "HOME": home, "VOICE_DIR": vdir, "CLAUDE_SESSION_ID": sid,
+        env = {**BASE_ENV, "PATH": stubs + ":" + os.environ["PATH"], "HOME": home, "VOICE_DIR": vdir, "CLAUDE_SESSION_ID": session,
                "CLAUDE_WORKDIR": work, "CLAUDE_BIN": os.path.join(stubs, claude), "TELEGRAM_ENV_FILE": tg_env,
                "TMUX_SESSION": "main", "RESTART_WAIT_TRIES": "4", "RESTART_WAIT_STEP": "0.3"}
         return run(["bash", RESTART, *args], env=env)
@@ -168,6 +168,25 @@ try:
     check("restart: voice server missing -> FAIL line, message, exit 1", r.returncode == 1 and "voice channel: FAIL" in r.stdout and "FAILED: voice channel" in r.stderr, r.stdout + r.stderr)
     r = full("claude-nothing", "--no-voice")
     check("restart: --no-voice does not wait for or require the voice server", r.returncode == 0 and "voice channel" not in r.stdout, r.stdout + r.stderr)
+    a = open(argv_log).read()
+    check("restart: an existing session is resumed with --resume <id>", f"--resume {sid}" in a and "--session-id" not in a, a)
+    # --new: a new session under an id that has no transcript yet (the old transcript grew too large)
+    new_sid = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"
+    r = full("claude-nothing", "--new", "--no-voice", session=new_sid)
+    time.sleep(0.3)
+    a = open(argv_log).read()
+    check("restart --new: starts claude with --session-id <id>, not --resume, exit 0",
+          r.returncode == 0 and f"--session-id {new_sid}" in a and "--resume" not in a, r.stdout + r.stderr + a)
+    r = full("claude-nothing", "--no-voice", "--new", session=new_sid)
+    check("restart --new: the order of the arguments does not matter", r.returncode == 0, r.stdout + r.stderr)
+    r = full("claude-nothing", "--new", "--no-voice")
+    check("restart --new: refused for an id that already has a transcript", r.returncode == 1 and "already exists" in r.stderr, r.stdout + r.stderr)
+    r = full("claude-nothing", "--no-voice", session=new_sid)
+    check("restart: an id without a transcript and without --new fails and names --new", r.returncode == 1 and "add --new" in r.stderr, r.stdout + r.stderr)
+    r = full("claude-nothing", "--new", "--no-voice", session="1234-not-a-uuid")
+    check("restart --new: an id that is not a UUID is refused", r.returncode == 1 and "UUID" in r.stderr, r.stdout + r.stderr)
+    r = full("claude-nothing", "--bogus")
+    check("restart: an unknown argument is a usage error (exit 2)", r.returncode == 2 and "usage:" in r.stderr, r.stdout + r.stderr)
     write(tg_env, "TELEGRAM_BOT_TOKEN=987654321:AAfake\n", 0o600)
     r = full("claude-ok")
     check("restart: Telegram plugin not seen -> exit 1 even though voice is up",
